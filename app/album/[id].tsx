@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { File } from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
 import { useEffect, useState } from 'react';
-import { Alert, Image, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Image, Modal, NativeModules, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
@@ -12,6 +13,30 @@ type Album = { id: string; name: string; author: string; iconUri: string; sticke
 
 const ALBUMS_STORAGE_KEY = '@app-de-figurinhas/albums';
 const MAX_STICKER_BYTES = 100 * 1024;
+const WHATSAPP_OPERATION_TIMEOUT_MS = 15000;
+type ExportResult = { status: 'added' | 'cancelled' | 'rejected'; error?: string };
+const whatsappStickerModule = NativeModules.WhatsAppStickerModule as {
+  isWhatsAppAvailable(): Promise<boolean>;
+  addStickerPack(config: {
+    identifier: string;
+    title: string;
+    author: string;
+    trayImage: string;
+    publisherEmail: string;
+    publisherURL: string;
+    privacyPolicyURL: string;
+    licenseURL: string;
+    stickers: { url: string }[];
+  }): Promise<ExportResult>;
+};
+
+const EXPORT_ERROR_MESSAGES: Record<string, string> = {
+  WHATSAPP_NOT_INSTALLED: 'Instale o WhatsApp (ou o WhatsApp Business) para adicionar este álbum.',
+  NO_ACTIVITY: 'Mantenha o app aberto enquanto o WhatsApp é chamado e tente de novo.',
+  WHATSAPP_OPEN_FAILED: 'Não foi possível abrir a tela de importação do WhatsApp.',
+  EXPORT_IN_PROGRESS: 'Já existe uma importação aguardando resposta do WhatsApp.',
+  STICKER_PACK_FAILED: 'Falha ao preparar os arquivos das figurinhas.',
+};
 
 export default function AlbumDetailsScreen() {
   const router = useRouter();
@@ -23,6 +48,7 @@ export default function AlbumDetailsScreen() {
   const [editAuthor, setEditAuthor] = useState('');
   const [loading, setLoading] = useState(true);
   const [validating, setValidating] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     async function loadAlbum() {
@@ -113,32 +139,96 @@ export default function AlbumDetailsScreen() {
     }
   }
 
+  async function getAlbumValidationErrors() {
+    if (!album) return ['álbum não encontrado'];
+    const errors: string[] = [];
+    if (album.stickers.length < 3) errors.push('adicione pelo menos 3 figurinhas');
+    if (album.stickers.length > 30) errors.push('remova figurinhas até ficar com no máximo 30');
+
+    for (const [index, sticker] of album.stickers.entries()) {
+      const number = index + 1;
+      if (sticker.format !== 'webp') errors.push(`a figurinha ${number} não está em WebP`);
+      if (sticker.width !== 512 || sticker.height !== 512) errors.push(`a figurinha ${number} não está em 512x512`);
+      const file = new File(sticker.processedUri);
+      if (!file.exists) errors.push(`a figurinha ${number} não está mais disponível no dispositivo`);
+      else if (file.size > MAX_STICKER_BYTES) errors.push(`a figurinha ${number} excede 100 KB`);
+    }
+    return errors;
+  }
+
   async function validateAlbumForWhatsApp() {
-    if (!album || validating) return;
+    if (!album || validating || exporting) return;
     setValidating(true);
     try {
-      const errors: string[] = [];
-      if (album.stickers.length < 3) errors.push('adicione pelo menos 3 figurinhas');
-      if (album.stickers.length > 30) errors.push('remova figurinhas até ficar com no máximo 30');
-
-      for (const [index, sticker] of album.stickers.entries()) {
-        const number = index + 1;
-        if (sticker.format !== 'webp') errors.push(`a figurinha ${number} não está em WebP`);
-        if (sticker.width !== 512 || sticker.height !== 512) errors.push(`a figurinha ${number} não está em 512x512`);
-        const response = await fetch(sticker.processedUri);
-        const fileSize = (await response.blob()).size;
-        if (fileSize > MAX_STICKER_BYTES) errors.push(`a figurinha ${number} excede 100 KB`);
-      }
-
-      if (errors.length > 0) {
-        Alert.alert('Álbum não validado', errors.join('\n'));
-      } else {
-        Alert.alert('Álbum válido', 'Todas as figurinhas atendem aos requisitos para o WhatsApp.');
-      }
+      const errors = await getAlbumValidationErrors();
+      Alert.alert(errors.length > 0 ? 'Álbum não validado' : 'Álbum válido', errors.length > 0
+        ? errors.join('\n')
+        : 'Todas as figurinhas atendem aos requisitos para o WhatsApp.');
     } catch {
       Alert.alert('Não foi possível validar', 'Tente novamente em alguns instantes.');
     } finally {
       setValidating(false);
+    }
+  }
+
+  async function addAlbumToWhatsApp() {
+    if (!album || validating || exporting) return;
+    if (!whatsappStickerModule) {
+      Alert.alert('Módulo nativo ausente', 'O WhatsAppStickerModule não foi carregado. Rode "npx expo run:android" para reconstruir o app — recarregar o JS não basta.');
+      return;
+    }
+    setExporting(true);
+    try {
+      const errors = await Promise.race([
+        getAlbumValidationErrors(),
+        new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error('validation-timeout')), WHATSAPP_OPERATION_TIMEOUT_MS)),
+      ]);
+      if (errors.length > 0) {
+        Alert.alert('Álbum não validado', errors.join('\n'));
+        return;
+      }
+
+      const whatsappAvailable = await Promise.race([
+        whatsappStickerModule.isWhatsAppAvailable(),
+        new Promise<boolean>((_, reject) => setTimeout(() => reject(new Error('availability-timeout')), WHATSAPP_OPERATION_TIMEOUT_MS)),
+      ]);
+      if (!whatsappAvailable) {
+        Alert.alert('WhatsApp não encontrado', 'Instale o WhatsApp ou o WhatsApp Business para adicionar este álbum.');
+        return;
+      }
+
+      const identifier = `album_${album.id.replace(/[^a-zA-Z0-9_]/g, '_')}`;
+      // Sem timeout aqui: a Promise so resolve quando o usuario volta da tela do WhatsApp.
+      const result = await whatsappStickerModule.addStickerPack({
+        identifier,
+        title: album.name,
+        author: album.author,
+        trayImage: album.stickers[0].processedUri,
+        publisherEmail: 'nikolasyan@users.noreply.github.com',
+        publisherURL: 'https://github.com/nikolasyan/whatsapp-stickermaker',
+        privacyPolicyURL: 'https://github.com/nikolasyan/whatsapp-stickermaker',
+        licenseURL: 'https://github.com/nikolasyan/whatsapp-stickermaker',
+        stickers: album.stickers.map((sticker) => ({ url: sticker.processedUri })),
+      });
+
+      if (result.status === 'added') {
+        Alert.alert('Adicionado ao WhatsApp', `"${album.name}" já está disponível nas suas figurinhas.`);
+      } else if (result.status === 'cancelled') {
+        Alert.alert('Importação cancelada', 'Você saiu da tela do WhatsApp antes de confirmar.');
+      } else {
+        Alert.alert('WhatsApp recusou o álbum', result.error ?? 'O WhatsApp não informou o motivo.');
+      }
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : '';
+      const message = error instanceof Error && error.message === 'validation-timeout'
+        ? 'A validação demorou demais. Verifique se as imagens do álbum ainda estão disponíveis.'
+        : error instanceof Error && error.message === 'availability-timeout'
+          ? 'O WhatsApp não respondeu à verificação.'
+          : EXPORT_ERROR_MESSAGES[code]
+            ?? (error instanceof Error && error.message ? error.message : 'O WhatsApp não conseguiu importar este álbum.');
+      Alert.alert('Não foi possível adicionar', message);
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -194,6 +284,9 @@ export default function AlbumDetailsScreen() {
       </View>
       <Pressable onPress={validateAlbumForWhatsApp} disabled={validating} style={({ pressed }) => [styles.validationButton, pressed && styles.pressed, validating && styles.disabled]}>
         <ThemedText style={styles.validationText}>{validating ? 'Validando...' : 'Validar para o WhatsApp'}</ThemedText>
+      </Pressable>
+      <Pressable onPress={addAlbumToWhatsApp} disabled={validating || exporting} style={({ pressed }) => [styles.whatsappButton, pressed && styles.pressed, (validating || exporting) && styles.disabled]}>
+        <ThemedText style={styles.whatsappText}>{exporting ? 'Adicionando...' : 'Adicionar ao WhatsApp'}</ThemedText>
       </Pressable>
 
       {album.stickers.length === 0 ? (
@@ -255,6 +348,8 @@ const styles = StyleSheet.create({
   albumActions: { flexDirection: 'row', gap: 10, paddingBottom: 20 },
   validationButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', marginBottom: 20, borderRadius: 8, backgroundColor: '#E5F6EE' },
   validationText: { color: '#18794E', fontWeight: '700' },
+  whatsappButton: { minHeight: 52, alignItems: 'center', justifyContent: 'center', marginBottom: 20, borderRadius: 8, backgroundColor: '#25D366' },
+  whatsappText: { color: '#FFFFFF', fontWeight: '700' },
   actionButton: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#1769E0', borderRadius: 8 },
   actionText: { color: '#1769E0', fontWeight: '700' },
   deleteOutline: { borderColor: '#C53030' },

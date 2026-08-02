@@ -1,4 +1,5 @@
 import * as ImagePicker from 'expo-image-picker';
+import { Directory, File, Paths } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import ImageCropPicker from 'react-native-image-crop-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -16,6 +17,18 @@ type Album = { id: string; name: string; author: string; iconUri: string; sticke
 
 const ALBUMS_STORAGE_KEY = '@app-de-figurinhas/albums';
 const MAX_STICKER_BYTES = 100 * 1024;
+const STICKERS_DIRECTORY = 'stickers';
+
+// captureRef e manipulateAsync gravam no cache interno, que o Android limpa sozinho.
+// Como o URI fica salvo no AsyncStorage, a figurinha precisa ir para um diretorio permanente.
+function persistSticker(temporaryUri: string, stickerId: string) {
+  const directory = new Directory(Paths.document, STICKERS_DIRECTORY);
+  if (!directory.exists) directory.create({ intermediates: true });
+  const destination = new File(directory, `${stickerId}.webp`);
+  if (destination.exists) destination.delete();
+  new File(temporaryUri).copy(destination);
+  return destination.uri;
+}
 
 export default function HomeScreen() {
   const [originalImage, setOriginalImage] = useState<ImageAsset | null>(null);
@@ -53,7 +66,7 @@ export default function HomeScreen() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: false,
       allowsMultipleSelection: false,
       quality: 1,
@@ -129,6 +142,20 @@ export default function HomeScreen() {
     throw new Error('Figurinha excede o limite de 100 KB');
   }
 
+  async function buildSticker(sourceUri: string): Promise<Sticker> {
+    const stickerId = `${Date.now()}-sticker`;
+    const captured = await captureStickerCanvas();
+    return {
+      id: stickerId,
+      originalUri: sourceUri,
+      processedUri: persistSticker(captured.uri, stickerId),
+      mode: imageMode ?? 'original',
+      format: 'webp',
+      width: captured.width,
+      height: captured.height,
+    };
+  }
+
   function chooseNewAlbum() {
     setAlbumChoiceVisible(false);
     setAlbumName('');
@@ -166,28 +193,20 @@ export default function HomeScreen() {
       return;
     }
 
-    let stickerImage: ImageAsset;
+    let sticker: Sticker;
     try {
-      stickerImage = await captureStickerCanvas();
+      sticker = await buildSticker(originalImage.uri);
     } catch {
       Alert.alert('Nao foi possivel preparar a imagem', 'Tente novamente.');
       return;
     }
 
-    const sticker: Sticker = {
-      id: `${Date.now()}-sticker`,
-      originalUri: originalImage.uri,
-      processedUri: stickerImage.uri,
-      mode: imageMode ?? 'original',
-      format: 'webp',
-      width: stickerImage.width,
-      height: stickerImage.height,
-    };
     const album: Album = {
       id: `${Date.now()}-album`,
       name: trimmedName,
       author: trimmedAuthor,
-      iconUri: displayedImage.uri,
+      // O URI persistido da figurinha sobrevive a limpeza de cache; o do preview nao.
+      iconUri: sticker.processedUri,
       stickers: [sticker],
     };
 
@@ -220,16 +239,7 @@ export default function HomeScreen() {
         return;
       }
 
-      const stickerImage = await captureStickerCanvas();
-      const sticker: Sticker = {
-        id: `${Date.now()}-sticker`,
-        originalUri: originalImage.uri,
-        processedUri: stickerImage.uri,
-        mode: imageMode ?? 'original',
-        format: 'webp',
-        width: stickerImage.width,
-        height: stickerImage.height,
-      };
+      const sticker = await buildSticker(originalImage.uri);
       const updatedAlbum = { ...currentAlbum, stickers: [...currentAlbum.stickers, sticker] };
       const nextAlbums = currentAlbums.map((current) => current.id === currentAlbum.id ? updatedAlbum : current);
       await AsyncStorage.setItem(ALBUMS_STORAGE_KEY, JSON.stringify(nextAlbums));
