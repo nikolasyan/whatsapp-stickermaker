@@ -53,9 +53,7 @@ export default function EditorScreen() {
 
   async function openCropper() {
     try {
-      console.log('[editor] abrindo recortador para', sourceUri);
       const result = await ImageCropPicker.openCropper(cropperOptions(sourceUri));
-      console.log('[editor] recorte devolvido', result.path, result.width, 'x', result.height);
       // O <Image> do preview so carrega com esquema; o recortador pode devolver caminho puro.
       setCroppedUri(result.path.startsWith('file://') ? result.path : `file://${result.path}`);
       setMode('crop');

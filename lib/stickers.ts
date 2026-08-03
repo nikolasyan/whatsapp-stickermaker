@@ -47,7 +47,6 @@ export function deleteStickerFile(uri: string) {
 export async function stageSourceImage(uri: string): Promise<string> {
   try {
     const result = await manipulateAsync(uri, [], { format: SaveFormat.PNG });
-    console.log('[criar] imagem convertida para PNG em', result.uri);
     return result.uri;
   } catch (error) {
     // Nao silenciar: sem o aviso, uma falha aqui reproduz o bug original identico.
