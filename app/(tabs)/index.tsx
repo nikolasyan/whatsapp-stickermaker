@@ -1,385 +1,167 @@
 import * as ImagePicker from 'expo-image-picker';
-import { Directory, File, Paths } from 'expo-file-system';
-import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
-import ImageCropPicker from 'react-native-image-crop-picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Image, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { captureRef } from 'react-native-view-shot';
+import { useRouter } from 'expo-router';
+import { useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
+import { Checker } from '@/components/jambo/checker';
+import { FloatingMark } from '@/components/jambo/floating-mark';
+import { JamboIcon } from '@/components/jambo/icons';
+import { JamboMark } from '@/components/jambo/jambo-mark';
+import { IconButton, SpecChip } from '@/components/jambo/ui';
+import { JamboFonts, JamboRadius } from '@/constants/jambo-theme';
+import { useJamboTheme } from '@/hooks/use-jambo-theme';
+import { stageSourceImage } from '@/lib/stickers';
 
-type ImageAsset = { uri: string; width: number; height: number };
-type ImageMode = 'crop' | 'original';
-type Sticker = { id: string; originalUri: string; processedUri: string; mode: ImageMode; format: 'webp'; width: number; height: number };
-type Album = { id: string; name: string; author: string; iconUri: string; stickers: Sticker[] };
+export default function CreateScreen() {
+  const router = useRouter();
+  const { palette, scheme } = useJamboTheme();
+  // O preview e quadrado, mas titulo e subtitulo quebram em telas estreitas.
+  // Medir o espaco livre evita que ele empurre o rodape para fora da tela.
+  const [previewSize, setPreviewSize] = useState(0);
 
-const ALBUMS_STORAGE_KEY = '@app-de-figurinhas/albums';
-const MAX_STICKER_BYTES = 100 * 1024;
-const STICKERS_DIRECTORY = 'stickers';
+  function measurePreview(event: LayoutChangeEvent) {
+    const { width, height } = event.nativeEvent.layout;
+    const next = Math.floor(Math.min(width, height));
+    if (Math.abs(next - previewSize) > 1) setPreviewSize(next);
+  }
 
-// captureRef e manipulateAsync gravam no cache interno, que o Android limpa sozinho.
-// Como o URI fica salvo no AsyncStorage, a figurinha precisa ir para um diretorio permanente.
-function persistSticker(temporaryUri: string, stickerId: string) {
-  const directory = new Directory(Paths.document, STICKERS_DIRECTORY);
-  if (!directory.exists) directory.create({ intermediates: true });
-  const destination = new File(directory, `${stickerId}.webp`);
-  if (destination.exists) destination.delete();
-  new File(temporaryUri).copy(destination);
-  return destination.uri;
-}
+  async function openEditor(uri: string, width: number, height: number) {
+    // Converte para PNG antes de entrar no editor: o recortador nativo nao abre WebP.
+    const staged = await stageSourceImage(uri);
+    router.push({ pathname: '/editor', params: { uri: staged, width: String(width), height: String(height) } });
+  }
 
-export default function HomeScreen() {
-  const [originalImage, setOriginalImage] = useState<ImageAsset | null>(null);
-  const [processedImage, setProcessedImage] = useState<ImageAsset | null>(null);
-  const [imageMode, setImageMode] = useState<ImageMode | null>(null);
-  const [albumChoiceVisible, setAlbumChoiceVisible] = useState(false);
-  const [albumListVisible, setAlbumListVisible] = useState(false);
-  const [albumCreationVisible, setAlbumCreationVisible] = useState(false);
-  const [albumName, setAlbumName] = useState('');
-  const [albumAuthor, setAlbumAuthor] = useState('');
-  const [albums, setAlbums] = useState<Album[]>([]);
-  const previewRef = useRef<View>(null);
-
-  useEffect(() => {
-    async function loadAlbums() {
-      try {
-        const storedAlbums = await AsyncStorage.getItem(ALBUMS_STORAGE_KEY);
-        if (storedAlbums) {
-          const parsedAlbums = JSON.parse(storedAlbums) as Album[];
-          setAlbums(Array.isArray(parsedAlbums) ? parsedAlbums : []);
-        }
-      } catch {
-        setAlbums([]);
-      }
-    }
-
-    loadAlbums();
-  }, []);
-
-  async function selectImage() {
+  async function pickFromLibrary() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permissao necessaria', 'Permita o acesso as suas fotos para escolher uma imagem.');
+      Alert.alert('Permissão necessária', 'Permita o acesso às suas fotos para escolher uma imagem.');
       return;
     }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
       allowsMultipleSelection: false,
       quality: 1,
     });
-
-    if (!result.canceled && result.assets[0]?.uri) {
-      const asset = result.assets[0];
-      const selected = { uri: asset.uri, width: asset.width, height: asset.height };
-      setOriginalImage(selected);
-      setProcessedImage(null);
-      setImageMode(null);
-    }
+    const asset = result.canceled ? null : result.assets[0];
+    if (asset?.uri) await openEditor(asset.uri, asset.width, asset.height);
   }
 
-  async function openCropEditor() {
-    if (!originalImage) return;
-    try {
-      const result = await ImageCropPicker.openCropper({
-        path: originalImage.uri,
-        mediaType: 'photo',
-        cropping: true,
-        width: 512,
-        height: 512,
-        compressImageMaxWidth: 512,
-        compressImageMaxHeight: 512,
-        compressImageQuality: 0.9,
-        showCropFrame: true,
-        showCropGuidelines: true,
-        avoidEmptySpaceAroundImage: true,
-        cropperToolbarTitle: 'Recortar figurinha',
-        cropperChooseText: 'Confirmar',
-        cropperCancelText: 'Cancelar',
-      });
-      setProcessedImage({ uri: result.path, width: result.width, height: result.height });
-      setImageMode('crop');
-    } catch {
-      // Cancelar o editor nativo tambem rejeita a Promise.
-    }
-  }
-
-  const displayedImage = imageMode === 'crop' ? processedImage : originalImage;
-  const screenTitle = !originalImage
-    ? 'Selecionar imagem'
-    : imageMode === 'crop'
-      ? 'Recortar figurinha'
-      : imageMode === 'original'
-        ? 'Tamanho original'
-        : 'Editar figurinha';
-
-  async function captureStickerCanvas() {
-    if (!previewRef.current) throw new Error('Preview indisponivel');
-    const capturedUri = await captureRef(previewRef, {
-      format: 'png',
-      result: 'tmpfile',
-      width: 512,
-      height: 512,
-      quality: 1,
-    });
-
-    const qualities = [0.9, 0.75, 0.6, 0.45, 0.3, 0.15];
-    for (const quality of qualities) {
-      const result = await manipulateAsync(capturedUri, [], {
-        compress: quality,
-        format: SaveFormat.WEBP,
-      });
-      const response = await fetch(result.uri);
-      const fileSize = (await response.blob()).size;
-      if (fileSize <= MAX_STICKER_BYTES) {
-        return { uri: result.uri, width: result.width, height: result.height };
-      }
-    }
-
-    throw new Error('Figurinha excede o limite de 100 KB');
-  }
-
-  async function buildSticker(sourceUri: string): Promise<Sticker> {
-    const stickerId = `${Date.now()}-sticker`;
-    const captured = await captureStickerCanvas();
-    return {
-      id: stickerId,
-      originalUri: sourceUri,
-      processedUri: persistSticker(captured.uri, stickerId),
-      mode: imageMode ?? 'original',
-      format: 'webp',
-      width: captured.width,
-      height: captured.height,
-    };
-  }
-
-  function chooseNewAlbum() {
-    setAlbumChoiceVisible(false);
-    setAlbumName('');
-    setAlbumAuthor('');
-    setAlbumCreationVisible(true);
-  }
-
-  function chooseExistingAlbum() {
-    setAlbumChoiceVisible(false);
-    setAlbumListVisible(true);
-  }
-
-  async function handleProceed() {
-    try {
-      const storedAlbums = await AsyncStorage.getItem(ALBUMS_STORAGE_KEY);
-      const currentAlbums = storedAlbums ? JSON.parse(storedAlbums) as Album[] : [];
-      const syncedAlbums = Array.isArray(currentAlbums) ? currentAlbums : [];
-      setAlbums(syncedAlbums);
-      if (syncedAlbums.length === 0) {
-        chooseNewAlbum();
-        return;
-      }
-      setAlbumChoiceVisible(true);
-    } catch {
-      Alert.alert('Nao foi possivel carregar', 'Tente prosseguir novamente.');
-    }
-  }
-
-  async function createAlbum() {
-    if (!originalImage || !displayedImage) return;
-    const trimmedName = albumName.trim();
-    const trimmedAuthor = albumAuthor.trim();
-    if (!trimmedName || !trimmedAuthor) {
-      Alert.alert('Preencha os dados', 'Informe o nome do album e o autor.');
+  async function takePhoto() {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permissão necessária', 'Permita o acesso à câmera para tirar uma foto.');
       return;
     }
-
-    let sticker: Sticker;
-    try {
-      sticker = await buildSticker(originalImage.uri);
-    } catch {
-      Alert.alert('Nao foi possivel preparar a imagem', 'Tente novamente.');
-      return;
-    }
-
-    const album: Album = {
-      id: `${Date.now()}-album`,
-      name: trimmedName,
-      author: trimmedAuthor,
-      // O URI persistido da figurinha sobrevive a limpeza de cache; o do preview nao.
-      iconUri: sticker.processedUri,
-      stickers: [sticker],
-    };
-
-    try {
-      const storedAlbums = await AsyncStorage.getItem(ALBUMS_STORAGE_KEY);
-      const currentAlbums = storedAlbums ? JSON.parse(storedAlbums) as Album[] : [];
-      const nextAlbums = [...currentAlbums, album];
-      await AsyncStorage.setItem(ALBUMS_STORAGE_KEY, JSON.stringify(nextAlbums));
-      setAlbums(nextAlbums);
-      setAlbumCreationVisible(false);
-      Alert.alert('Album criado', 'A figurinha foi adicionada ao novo album.');
-    } catch {
-      Alert.alert('Nao foi possivel salvar', 'Tente criar o album novamente.');
-    }
-  }
-
-  async function addStickerToAlbum(album: Album) {
-    if (!originalImage || !displayedImage) return;
-
-    try {
-      const storedAlbums = await AsyncStorage.getItem(ALBUMS_STORAGE_KEY);
-      const currentAlbums = storedAlbums ? JSON.parse(storedAlbums) as Album[] : [];
-      const currentAlbum = currentAlbums.find((current) => current.id === album.id);
-      if (!currentAlbum) {
-        Alert.alert('Album nao encontrado', 'Atualize a listagem e tente novamente.');
-        return;
-      }
-      if (currentAlbum.stickers.length >= 30) {
-        Alert.alert('Album cheio', 'Cada album pode ter no maximo 30 figurinhas.');
-        return;
-      }
-
-      const sticker = await buildSticker(originalImage.uri);
-      const updatedAlbum = { ...currentAlbum, stickers: [...currentAlbum.stickers, sticker] };
-      const nextAlbums = currentAlbums.map((current) => current.id === currentAlbum.id ? updatedAlbum : current);
-      await AsyncStorage.setItem(ALBUMS_STORAGE_KEY, JSON.stringify(nextAlbums));
-      setAlbums(nextAlbums);
-      setAlbumListVisible(false);
-      Alert.alert('Figurinha adicionada', `A figurinha foi adicionada ao album ${currentAlbum.name}.`);
-    } catch {
-      Alert.alert('Nao foi possivel salvar', 'Tente adicionar a figurinha novamente.');
-    }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
+    const asset = result.canceled ? null : result.assets[0];
+    if (asset?.uri) await openEditor(asset.uri, asset.width, asset.height);
   }
 
   return (
-    <ThemedView style={styles.container}>
-      <ThemedText type="title" style={styles.title}>{screenTitle}</ThemedText>
-      <View ref={previewRef} collapsable={false} style={styles.previewFrame}>
-        {displayedImage ? <Image source={{ uri: displayedImage.uri }} style={styles.previewImage} resizeMode={imageMode === 'crop' ? 'cover' : 'contain'} /> : <ThemedText style={styles.emptyText}>Seu preview aparecera aqui</ThemedText>}
+    <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: palette.bg }]}>
+      <View pointerEvents="none" style={styles.watermark}>
+        <FloatingMark
+          size={230}
+          slow
+          body={scheme === 'dark' ? '#1A0A10' : '#FFF0F0'}
+          leaf={scheme === 'dark' ? '#12291D' : '#EAF3ED'}
+        />
       </View>
 
-      {!originalImage ? (
-        <Pressable onPress={selectImage} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-          <ThemedText style={styles.primaryText}>Selecionar imagem</ThemedText>
+      <View style={styles.header}>
+        <View style={styles.brand}>
+          <JamboMark size={24} body={palette.accent} leaf={palette.leaf} />
+          <View style={styles.brandText}>
+            <Text style={[styles.wordmark, { color: palette.text }]}>Jambo</Text>
+            <Text style={[styles.tagline, { color: palette.textMuted }]}>STICKER MAKER</Text>
+          </View>
+        </View>
+        <IconButton
+          name="gear"
+          size={36}
+          palette={palette}
+          accessibilityLabel="Ajustes"
+          onPress={() => router.push('/modal')}
+        />
+      </View>
+
+      <View style={styles.titleBlock}>
+        <Text style={[styles.title, { color: palette.text }]}>Preview da sua imagem</Text>
+        <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
+          Escolha uma foto ou tire uma na hora. Recorte depois.
+        </Text>
+      </View>
+
+      <View style={styles.previewWrap} onLayout={measurePreview}>
+        {previewSize > 0 ? (
+          <Checker
+            cell={26}
+            light={palette.checkerLight}
+            dark={palette.checkerDark}
+            style={[styles.preview, { width: previewSize, height: previewSize, borderColor: palette.borderDashed }]}>
+            <View style={styles.previewInner}>
+              <FloatingMark size={86} body={palette.accent} leaf={palette.leaf} />
+              <Text style={[styles.previewHint, { color: palette.textMuted }]}>Seu preview aparecerá aqui</Text>
+            </View>
+          </Checker>
+        ) : null}
+      </View>
+
+      <View style={styles.actions}>
+        <Pressable
+          onPress={pickFromLibrary}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.galleryButton, { backgroundColor: palette.accent }, pressed && styles.pressed]}>
+          <JamboIcon name="camera" size={19} color={palette.onAccent} />
+          <Text style={[styles.galleryLabel, { color: palette.onAccent }]}>Galeria</Text>
         </Pressable>
-      ) : (
-        <ThemedView style={styles.options}>
-          <Pressable onPress={openCropEditor} style={({ pressed }) => [styles.option, imageMode === 'crop' && styles.selected, pressed && styles.pressed]}>
-            <ThemedText style={[styles.optionText, imageMode === 'crop' && styles.selectedText]}>Recortar</ThemedText>
-          </Pressable>
-          <Pressable onPress={() => { setImageMode('original'); setProcessedImage(null); }} style={({ pressed }) => [styles.option, imageMode === 'original' && styles.selected, pressed && styles.pressed]}>
-            <ThemedText style={[styles.optionText, imageMode === 'original' && styles.selectedText]}>Tamanho original</ThemedText>
-          </Pressable>
-          <Pressable onPress={selectImage} style={({ pressed }) => [styles.outlineButton, styles.changeImageButton, pressed && styles.pressed]}>
-            <ThemedText style={styles.outlineText}>Escolher outra imagem</ThemedText>
-          </Pressable>
-          <Pressable onPress={handleProceed} style={({ pressed }) => [styles.primaryButton, styles.continueButton, pressed && styles.pressed]}>
-            <ThemedText style={styles.primaryText}>Prosseguir</ThemedText>
-          </Pressable>
-        </ThemedView>
-      )}
+        <IconButton name="cameraAlt" size={56} palette={palette} accessibilityLabel="Tirar foto" onPress={takePhoto} />
+      </View>
 
-      <Modal visible={albumChoiceVisible} transparent animationType="fade" onRequestClose={() => setAlbumChoiceVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.albumModal}>
-            <ThemedText type="subtitle" style={[styles.modalTitle, styles.modalTitleText]}>Onde salvar a figurinha?</ThemedText>
-            <ThemedText style={[styles.modalHint, styles.modalHintText]}>Escolha um album para continuar a montagem.</ThemedText>
-            <Pressable onPress={chooseNewAlbum} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.primaryText}>Criar novo album</ThemedText>
-            </Pressable>
-            <Pressable onPress={chooseExistingAlbum} style={({ pressed }) => [styles.option, pressed && styles.pressed]}>
-              <ThemedText style={styles.optionText}>Usar album existente</ThemedText>
-            </Pressable>
-            <Pressable onPress={() => setAlbumChoiceVisible(false)} style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.outlineText}>Cancelar</ThemedText>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={albumCreationVisible} transparent animationType="fade" onRequestClose={() => setAlbumCreationVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.albumModal}>
-            <ThemedText type="subtitle" style={[styles.modalTitle, styles.modalTitleText]}>Criar novo album</ThemedText>
-            <ThemedText style={[styles.modalHint, styles.modalHintText]}>A figurinha atual sera adicionada automaticamente.</ThemedText>
-            <TextInput
-              value={albumName}
-              onChangeText={setAlbumName}
-              placeholder="Nome do album"
-              placeholderTextColor="#718096"
-              style={styles.textInput}
-            />
-            <TextInput
-              value={albumAuthor}
-              onChangeText={setAlbumAuthor}
-              placeholder="Autor"
-              placeholderTextColor="#718096"
-              style={styles.textInput}
-            />
-            <Pressable onPress={createAlbum} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.primaryText}>Criar album</ThemedText>
-            </Pressable>
-            <Pressable onPress={() => setAlbumCreationVisible(false)} style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.outlineText}>Cancelar</ThemedText>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={albumListVisible} transparent animationType="fade" onRequestClose={() => setAlbumListVisible(false)}>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.albumModal}>
-            <ThemedText type="subtitle" style={[styles.modalTitle, styles.modalTitleText]}>Usar album existente</ThemedText>
-            <ThemedText style={[styles.modalHint, styles.modalHintText]}>Escolha onde adicionar a figurinha atual.</ThemedText>
-            {albums.map((album) => (
-              <Pressable key={album.id} onPress={() => addStickerToAlbum(album)} style={({ pressed }) => [styles.albumRow, pressed && styles.pressed]}>
-                <Image source={{ uri: album.iconUri }} style={styles.albumIcon} />
-                <View style={styles.albumInfo}>
-                  <ThemedText style={styles.albumName}>{album.name}</ThemedText>
-                  <ThemedText style={styles.albumCount}>{album.stickers.length}/30 figurinhas</ThemedText>
-                </View>
-              </Pressable>
-            ))}
-            <Pressable onPress={() => setAlbumListVisible(false)} style={({ pressed }) => [styles.cancelButton, pressed && styles.pressed]}>
-              <ThemedText style={styles.outlineText}>Cancelar</ThemedText>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-    </ThemedView>
+      <View style={styles.specWrap}>
+        <SpecChip palette={palette} mono="512×512">
+          · WebP · máx. 100 KB — o app resolve isso pra você
+        </SpecChip>
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 20, padding: 24 },
-  title: { textAlign: 'center', fontSize: 34, lineHeight: 40 },
-  previewFrame: { width: 280, height: 280, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', backgroundColor: 'transparent' },
-  previewImage: { width: 280, height: 280 },
-  emptyText: { paddingHorizontal: 28, textAlign: 'center', opacity: 0.6 },
-  primaryButton: { width: '100%', maxWidth: 320, minHeight: 52, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, borderRadius: 8, backgroundColor: '#1769E0' },
-  primaryText: { color: '#FFFFFF', fontWeight: '700' },
-  options: { width: '100%', maxWidth: 320, alignItems: 'center', gap: 10 },
-  option: { width: '100%', minHeight: 52, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderWidth: 1, borderColor: '#1769E0', borderRadius: 8 },
-  optionText: { color: '#1769E0', fontWeight: '700', textAlign: 'center' },
-  selected: { backgroundColor: '#1769E0' },
-  selectedText: { color: '#FFFFFF' },
-  outlineButton: { width: '100%', minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, borderWidth: 1, borderColor: '#1769E0', borderRadius: 8 },
-  changeImageButton: { marginTop: 50 },
-  continueButton: { marginTop: 4 },
-  outlineText: { color: '#1769E0', fontWeight: '700' },
+  screen: { flex: 1 },
+  watermark: { position: 'absolute', top: -60, right: -70, opacity: 0.35 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 22,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  brandText: { gap: 1 },
+  wordmark: { fontFamily: JamboFonts.display, fontSize: 19, letterSpacing: -0.6 },
+  tagline: { fontFamily: JamboFonts.bodySemi, fontSize: 8.5, letterSpacing: 1.3 },
+  titleBlock: { paddingHorizontal: 24, paddingTop: 22, paddingBottom: 18, gap: 6 },
+  title: { fontFamily: JamboFonts.display, fontSize: 34, lineHeight: 37, letterSpacing: -1.2 },
+  subtitle: { fontFamily: JamboFonts.body, fontSize: 14.5, lineHeight: 21 },
+  previewWrap: { flex: 1, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center' },
+  preview: { borderRadius: JamboRadius.xxl, borderWidth: 1.5, borderStyle: 'dashed' },
+  previewInner: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
+  previewHint: { fontFamily: JamboFonts.body, fontSize: 13.5, textAlign: 'center', maxWidth: 190 },
+  actions: { flexDirection: 'row', gap: 10, paddingHorizontal: 24, paddingTop: 18 },
+  galleryButton: {
+    flex: 1,
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 9,
+    borderRadius: JamboRadius.lg,
+  },
+  galleryLabel: { fontFamily: JamboFonts.bodyBold, fontSize: 16 },
+  specWrap: { paddingHorizontal: 24, paddingTop: 12, paddingBottom: 12 },
   pressed: { opacity: 0.75 },
-  modalBackdrop: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, backgroundColor: 'rgba(0,0,0,0.45)' },
-  albumModal: { width: '100%', maxWidth: 340, gap: 12, padding: 24, backgroundColor: '#FFFFFF', borderRadius: 12 },
-  modalTitle: { textAlign: 'center' },
-  modalTitleText: { color: '#172033' },
-  modalHint: { marginBottom: 6, textAlign: 'center' },
-  modalHintText: { color: '#4A5568' },
-  textInput: { minHeight: 48, paddingHorizontal: 14, borderWidth: 1, borderColor: '#CBD5E0', borderRadius: 8, color: '#172033', backgroundColor: '#F7FAFC' },
-  cancelButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  albumRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 64, padding: 8, borderWidth: 1, borderColor: '#CBD5E0', borderRadius: 8 },
-  albumIcon: { width: 48, height: 48 },
-  albumInfo: { flex: 1, gap: 2 },
-  albumName: { color: '#172033', fontWeight: '700' },
-  albumCount: { color: '#4A5568', fontSize: 14 },
 });
