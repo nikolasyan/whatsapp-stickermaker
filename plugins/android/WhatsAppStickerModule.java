@@ -1,4 +1,4 @@
-package com.anonymous.appdefigurinhas.whatsapp;
+package __PACKAGE__.whatsapp;
 
 import android.app.Activity;
 import android.graphics.Bitmap;

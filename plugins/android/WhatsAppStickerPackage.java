@@ -1,4 +1,4 @@
-package com.anonymous.appdefigurinhas.whatsapp;
+package __PACKAGE__.whatsapp;
 
 import com.facebook.react.ReactPackage;
 import com.facebook.react.bridge.NativeModule;

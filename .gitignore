@@ -39,16 +39,7 @@ yarn-error.*
 app-example
 
 # generated native folders
+# Voltam a ser descartaveis: o codigo nativo das figurinhas vive em
+# plugins/with-whatsapp-stickers.js e e reaplicado a cada expo prebuild.
 /ios
-
-# O android/ e versionado porque contem codigo escrito a mao que o prebuild nao
-# recria: o modulo nativo das figurinhas (WhatsAppStickerModule/Provider), o
-# registro em MainApplication.kt e as entradas de manifest do WhatsApp.
-# Os artefatos de build ficam de fora.
-/android/.gradle/
-/android/.idea/
-/android/build/
-/android/app/build/
-/android/app/.cxx/
-/android/local.properties
-/android/*.iml
+/android

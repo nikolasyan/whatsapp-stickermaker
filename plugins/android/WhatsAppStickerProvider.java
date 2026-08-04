@@ -1,6 +1,6 @@
-package com.anonymous.appdefigurinhas.whatsapp;
+package __PACKAGE__.whatsapp;
 
-import com.anonymous.appdefigurinhas.BuildConfig;
+import __PACKAGE__.BuildConfig;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
