@@ -78,13 +78,6 @@ export default function CreateScreen() {
             <Text style={[styles.tagline, { color: palette.textMuted }]}>STICKER MAKER</Text>
           </View>
         </View>
-        <IconButton
-          name="gear"
-          size={36}
-          palette={palette}
-          accessibilityLabel="Ajustes"
-          onPress={() => router.push('/modal')}
-        />
       </View>
 
       <View style={styles.titleBlock}>
