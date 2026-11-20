@@ -11,7 +11,8 @@ import { JamboMark } from '@/components/jambo/jambo-mark';
 import { IconButton, SpecChip } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
-import { stageSourceImage } from '@/lib/stickers';
+import { MAX_STICKERS } from '@/lib/packs';
+import { setQueue, type QueuedImage } from '@/lib/sticker-queue';
 
 export default function CreateScreen() {
   const router = useRouter();
@@ -26,10 +27,17 @@ export default function CreateScreen() {
     if (Math.abs(next - previewSize) > 1) setPreviewSize(next);
   }
 
-  async function openEditor(uri: string, width: number, height: number) {
-    // Converte para PNG antes de entrar no editor: o recortador nativo nao abre WebP.
-    const staged = await stageSourceImage(uri);
-    router.push({ pathname: '/editor', params: { uri: staged, width: String(width), height: String(height) } });
+  /**
+   * Entrega a fila ao editor. Nao converte nada aqui: o stageSourceImage
+   * (reencodar para PNG) existe apenas porque o recortador nativo nao abre
+   * WebP, entao ele roda no editor, so quando o recorte e aberto de verdade.
+   * Com 12 fotos escolhidas, converter todas na entrada seriam 12 conversoes
+   * de vários MB — a maioria jogada fora sem ninguem usar.
+   */
+  function openEditor(images: QueuedImage[]) {
+    if (images.length === 0) return;
+    setQueue(images);
+    router.push('/editor');
   }
 
   async function pickFromLibrary() {
@@ -41,11 +49,15 @@ export default function CreateScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
-      allowsMultipleSelection: false,
+      allowsMultipleSelection: true,
+      // Teto do pacote: escolher mais que isso nao teria onde caber.
+      selectionLimit: MAX_STICKERS,
       quality: 1,
     });
-    const asset = result.canceled ? null : result.assets[0];
-    if (asset?.uri) await openEditor(asset.uri, asset.width, asset.height);
+    if (result.canceled) return;
+    openEditor(
+      result.assets.map((asset) => ({ sourceUri: asset.uri, width: asset.width, height: asset.height })),
+    );
   }
 
   async function takePhoto() {
@@ -56,7 +68,7 @@ export default function CreateScreen() {
     }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
     const asset = result.canceled ? null : result.assets[0];
-    if (asset?.uri) await openEditor(asset.uri, asset.width, asset.height);
+    if (asset?.uri) openEditor([{ sourceUri: asset.uri, width: asset.width, height: asset.height }]);
   }
 
   return (
@@ -83,7 +95,7 @@ export default function CreateScreen() {
       <View style={styles.titleBlock}>
         <Text style={[styles.title, { color: palette.text }]}>Preview da sua imagem</Text>
         <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
-          Escolha uma foto ou tire uma na hora. Recorte depois.
+          Escolha uma ou várias fotos, ou tire uma na hora. Recorte depois.
         </Text>
       </View>
 

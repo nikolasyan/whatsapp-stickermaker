@@ -1,15 +1,16 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Checker } from '@/components/jambo/checker';
 import { FloatingMark } from '@/components/jambo/floating-mark';
 import { JamboIcon } from '@/components/jambo/icons';
-import { StatusPill } from '@/components/jambo/ui';
+import { PrimaryButton, StatusPill } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
-import { MAX_STICKERS, computeReadiness, loadPacks, type Pack } from '@/lib/packs';
+import { importPackFromFile, packFileErrorMessage } from '@/lib/pack-file';
+import { MAX_STICKERS, computeReadiness, loadPacks, storageErrorMessage, type Pack } from '@/lib/packs';
 
 const THUMB_SLOTS = 4;
 
@@ -20,31 +21,65 @@ export default function PacksScreen() {
   const { palette, scheme } = useJamboTheme();
   const [rows, setRows] = useState<PackRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const packs = await loadPacks();
+    // computeReadiness le o disco; roda uma vez por foco, nunca por render.
+    return packs.map((pack) => ({
+      pack,
+      warnings: computeReadiness(pack).items.filter((item) => !item.ok).length,
+    }));
+  }, []);
+
+  const refresh = useCallback(
+    (active: () => boolean) =>
+      load()
+        .then((next) => {
+          if (!active()) return;
+          setRows(next);
+          setError(null);
+        })
+        .catch((caught) => {
+          // Nao cair numa lista vazia: mostrar "0 pacotes" para uma falha de
+          // leitura faz o usuario concluir que os pacotes foram apagados.
+          if (active()) setError(storageErrorMessage(caught));
+        })
+        .finally(() => {
+          if (active()) setLoading(false);
+        }),
+    [load],
+  );
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      async function load() {
-        try {
-          const packs = await loadPacks();
-          // computeReadiness le o disco; roda uma vez por foco, nunca por render.
-          const next = packs.map((pack) => ({
-            pack,
-            warnings: computeReadiness(pack).items.filter((item) => !item.ok).length,
-          }));
-          if (active) setRows(next);
-        } catch {
-          if (active) setRows([]);
-        } finally {
-          if (active) setLoading(false);
-        }
-      }
-      load();
+      refresh(() => active);
       return () => {
         active = false;
       };
-    }, []),
+    }, [refresh]),
   );
+
+  /**
+   * Importa um pacote de arquivo. Nao precisa recarregar a lista aqui: a
+   * navegacao vai para o pacote novo e o useFocusEffect acima recarrega
+   * quando o usuario volta.
+   */
+  async function handleImport() {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const pack = await importPackFromFile();
+      if (!pack) return; // usuario cancelou o seletor
+      router.push({ pathname: '/pack/[id]', params: { id: pack.id } });
+    } catch (error) {
+      Alert.alert('Não foi possível importar', packFileErrorMessage(error));
+    } finally {
+      setImporting(false);
+    }
+  }
 
   const totalStickers = rows.reduce((sum, row) => sum + row.pack.stickers.length, 0);
 
@@ -52,15 +87,40 @@ export default function PacksScreen() {
     <SafeAreaView edges={['top']} style={[styles.screen, { backgroundColor: palette.bg }]}>
       <View style={styles.titleBlock}>
         <Text style={[styles.title, { color: palette.text }]}>Seus pacotes</Text>
-        <Text style={[styles.meta, { color: palette.textMuted }]}>
-          {loading
-            ? 'carregando...'
-            : `${rows.length} ${rows.length === 1 ? 'pacote' : 'pacotes'} · ${totalStickers} ${totalStickers === 1 ? 'figurinha' : 'figurinhas'}`}
+        <Text style={[styles.meta, { color: error ? palette.warning : palette.textMuted }]}>
+          {error
+            ? 'não foi possível carregar'
+            : loading
+              ? 'carregando...'
+              : `${rows.length} ${rows.length === 1 ? 'pacote' : 'pacotes'} · ${totalStickers} ${totalStickers === 1 ? 'figurinha' : 'figurinhas'}`}
         </Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.list} showsVerticalScrollIndicator={false}>
-        {rows.map(({ pack, warnings }) => {
+        {/* Erro de leitura esconde as acoes de propósito: criar ou importar
+            tambem passa por loadPacks e falharia do mesmo jeito. */}
+        {error ? (
+          <View style={[styles.errorCard, { backgroundColor: palette.surface, borderColor: palette.warning }]}>
+            <View style={styles.errorHeader}>
+              <JamboIcon name="warning" size={18} color={palette.warning} />
+              <Text style={[styles.errorTitle, { color: palette.text }]}>Seus pacotes não foram lidos</Text>
+            </View>
+            <Text style={[styles.errorBody, { color: palette.textSecondary }]}>{error}</Text>
+            <Text style={[styles.errorHint, { color: palette.textMuted }]}>
+              Nada foi apagado. Os arquivos continuam no aparelho — não desinstale o app.
+            </Text>
+            <PrimaryButton
+              label="Tentar de novo"
+              palette={palette}
+              onPress={() => {
+                setLoading(true);
+                refresh(() => true);
+              }}
+            />
+          </View>
+        ) : null}
+
+        {error ? null : rows.map(({ pack, warnings }) => {
           const thumbs = pack.stickers.slice(0, THUMB_SLOTS);
           const overflow = pack.stickers.length - thumbs.length;
           return (
@@ -126,9 +186,11 @@ export default function PacksScreen() {
           );
         })}
 
+        {error ? null : (
+          <>
         <Pressable
           accessibilityRole="button"
-          onPress={() => router.push('/')}
+          onPress={() => router.navigate('/')}
           style={({ pressed }) => [styles.newCard, { borderColor: palette.border }, pressed && styles.pressed]}>
           <FloatingMark
             size={36}
@@ -144,6 +206,36 @@ export default function PacksScreen() {
           </View>
           <JamboIcon name="plusSmall" size={20} color={palette.accent} />
         </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          onPress={handleImport}
+          disabled={importing}
+          style={({ pressed }) => [
+            styles.newCard,
+            { borderColor: palette.border },
+            pressed && styles.pressed,
+            importing && styles.disabled,
+          ]}>
+          <View style={styles.importIcon}>
+            <JamboIcon name="download" size={24} color={palette.accent} />
+          </View>
+          <View style={styles.newCardInfo}>
+            <Text style={[styles.newCardTitle, { color: palette.textSecondary }]}>
+              {importing ? 'Importando...' : 'Importar pacote'}
+            </Text>
+            <Text style={[styles.newCardHint, { color: palette.textMuted }]}>
+              Abrir um arquivo de pacote recebido de um amigo
+            </Text>
+          </View>
+          {importing ? (
+            <ActivityIndicator size="small" color={palette.accent} />
+          ) : (
+            <JamboIcon name="chevronRight" size={20} color={palette.accent} />
+          )}
+        </Pressable>
+          </>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -176,5 +268,14 @@ const styles = StyleSheet.create({
   newCardInfo: { flex: 1, gap: 3 },
   newCardTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 15 },
   newCardHint: { fontFamily: JamboFonts.body, fontSize: 12.5, lineHeight: 17 },
+  // Mesmo espaco que a FloatingMark do card de cima ocupa, para os dois
+  // cards tracejados alinharem o texto na mesma coluna.
+  importIcon: { width: 36, alignItems: 'center', justifyContent: 'center' },
+  errorCard: { borderRadius: JamboRadius.xl, borderWidth: 1, padding: 18, gap: 10 },
+  errorHeader: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  errorTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 16 },
+  errorBody: { fontFamily: JamboFonts.body, fontSize: 13.5, lineHeight: 20 },
+  errorHint: { fontFamily: JamboFonts.body, fontSize: 12.5, lineHeight: 18 },
   pressed: { opacity: 0.75 },
+  disabled: { opacity: 0.5 },
 });

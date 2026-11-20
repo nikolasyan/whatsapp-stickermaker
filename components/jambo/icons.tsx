@@ -29,6 +29,10 @@ const PATHS = {
     'M18 16.1c-.8 0-1.5.3-2 .8l-7-4.1c0-.3.1-.5.1-.8s0-.5-.1-.8l7-4c.5.4 1.2.7 2 .7a3 3 0 100-6 3 3 0 00-3 3c0 .3 0 .5.1.8l-7 4a3 3 0 100 4.4l7 4.1c0 .2-.1.5-.1.7a3 3 0 103-2.8z',
   ],
   more: ['M12 8a2 2 0 100-4 2 2 0 000 4zm0 6a2 2 0 100-4 2 2 0 000 4zm0 6a2 2 0 100-4 2 2 0 000 4z'],
+  /** Seta entrando numa base: importar pacote de um arquivo. */
+  download: ['M11 3h2v10.2l3.6-3.6L18 11l-6 6-6-6 1.4-1.4L11 13.2z', 'M5 19h14v2H5z'],
+  /** Setas para os cantos: esticar a imagem até preencher o quadrado. */
+  expand: ['M4 4h6v2H6v4H4V4zm10 0h6v6h-2V6h-4V4zM4 14h2v4h4v2H4v-6zm14 0h2v6h-6v-2h4v-4z'],
   trash: ['M6 7h12l-1 14H7L6 7zm3-4h6l1 2H8l1-2zM4 5h16v2H4z'],
   pencil: ['M3 17.3V21h3.7L17.6 10.1l-3.7-3.7L3 17.3zM20.7 7c.4-.4.4-1 0-1.4l-2.3-2.3a1 1 0 00-1.4 0l-1.8 1.8 3.7 3.7L20.7 7z'],
 } as const;

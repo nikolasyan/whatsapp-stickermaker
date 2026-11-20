@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import { JamboIcon, type JamboIconName } from '@/components/jambo/icons';
 import { JamboFonts, JamboRadius, type JamboPalette } from '@/constants/jambo-theme';
@@ -9,18 +9,25 @@ export function IconButton({
   palette,
   size = 38,
   accessibilityLabel,
+  disabled,
+  busy,
 }: {
   name: JamboIconName;
   onPress: () => void;
   palette: JamboPalette;
   size?: number;
   accessibilityLabel: string;
+  disabled?: boolean;
+  /** Troca o icone por um spinner — para acoes demoradas, como exportar. */
+  busy?: boolean;
 }) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled || busy}
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: Boolean(disabled || busy), busy: Boolean(busy) }}
       style={({ pressed }) => [
         {
           width: size,
@@ -33,8 +40,13 @@ export function IconButton({
           justifyContent: 'center',
         },
         pressed && styles.pressed,
+        (disabled || busy) && styles.disabled,
       ]}>
-      <JamboIcon name={name} size={Math.round(size * 0.47)} color={palette.accentSoft} />
+      {busy ? (
+        <ActivityIndicator size="small" color={palette.accentSoft} />
+      ) : (
+        <JamboIcon name={name} size={Math.round(size * 0.47)} color={palette.accentSoft} />
+      )}
     </Pressable>
   );
 }
@@ -45,6 +57,7 @@ export function PrimaryButton({
   palette,
   icon,
   disabled,
+  busy,
   background,
   foreground,
   style,
@@ -54,6 +67,8 @@ export function PrimaryButton({
   palette: JamboPalette;
   icon?: JamboIconName;
   disabled?: boolean;
+  /** Mostra um spinner no lugar do icone, mantendo o rotulo legivel. */
+  busy?: boolean;
   /** Sobrescreve o accent — usado apenas pelo botao do WhatsApp. */
   background?: string;
   foreground?: string;
@@ -64,16 +79,21 @@ export function PrimaryButton({
   return (
     <Pressable
       onPress={onPress}
-      disabled={disabled}
+      disabled={disabled || busy}
       accessibilityRole="button"
+      accessibilityState={{ disabled: Boolean(disabled || busy), busy: Boolean(busy) }}
       style={({ pressed }) => [
         styles.primary,
         { backgroundColor: bg },
         pressed && styles.pressed,
-        disabled && styles.disabled,
+        (disabled || busy) && styles.disabled,
         style,
       ]}>
-      {icon ? <JamboIcon name={icon} size={18} color={fg} /> : null}
+      {busy ? (
+        <ActivityIndicator size="small" color={fg} />
+      ) : icon ? (
+        <JamboIcon name={icon} size={18} color={fg} />
+      ) : null}
       <Text style={{ color: fg, fontFamily: JamboFonts.bodyBold, fontSize: 16 }}>{label}</Text>
     </Pressable>
   );
@@ -84,21 +104,34 @@ export function OutlineButton({
   onPress,
   palette,
   tone = 'accent',
+  disabled,
+  busy,
   style,
 }: {
   label: string;
   onPress: () => void;
   palette: JamboPalette;
   tone?: 'accent' | 'danger';
+  disabled?: boolean;
+  busy?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
-  const border = tone === 'danger' ? '#FF8073' : palette.accent;
-  const color = tone === 'danger' ? '#FFA79E' : palette.accentSoft;
+  const border = tone === 'danger' ? palette.danger : palette.accent;
+  const color = tone === 'danger' ? palette.dangerSoft : palette.accentSoft;
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled || busy}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.outline, { borderColor: border }, pressed && styles.pressed, style]}>
+      accessibilityState={{ disabled: Boolean(disabled || busy), busy: Boolean(busy) }}
+      style={({ pressed }) => [
+        styles.outline,
+        { borderColor: border },
+        pressed && styles.pressed,
+        (disabled || busy) && styles.disabled,
+        style,
+      ]}>
+      {busy ? <ActivityIndicator size="small" color={color} /> : null}
       <Text style={{ color, fontFamily: JamboFonts.bodyBold, fontSize: 14.5 }}>{label}</Text>
     </Pressable>
   );
@@ -149,8 +182,10 @@ const styles = StyleSheet.create({
   },
   outline: {
     minHeight: 48,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
     paddingHorizontal: 18,
     borderRadius: 14,
     borderWidth: 2,

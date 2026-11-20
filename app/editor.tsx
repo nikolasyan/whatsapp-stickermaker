@@ -1,36 +1,61 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import ImageCropPicker from 'react-native-image-crop-picker';
 import { useState } from 'react';
-import { Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Checker } from '@/components/jambo/checker';
-import { JamboIcon } from '@/components/jambo/icons';
+import { JamboIcon, type JamboIconName } from '@/components/jambo/icons';
 import { JamboMark } from '@/components/jambo/jambo-mark';
 import { IconButton, PrimaryButton } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius, type JamboPalette } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
-import { MAX_STICKERS, loadPacks, mutatePacks, type Pack, type Sticker } from '@/lib/packs';
-import { buildSticker } from '@/lib/stickers';
+import {
+  MAX_STICKERS,
+  loadPacks,
+  mutatePacks,
+  newId,
+  storageErrorMessage,
+  type Pack,
+  type Sticker,
+  type StickerMode,
+} from '@/lib/packs';
+import { getQueue } from '@/lib/sticker-queue';
+import { buildSticker, stageSourceImage } from '@/lib/stickers';
 
-type Mode = 'crop' | 'original';
+/** Decisao de enquadramento de UMA imagem do lote. */
+type Decision = { mode: StickerMode; croppedUri: string | null };
+
+const DEFAULT_DECISION: Decision = { mode: 'original', croppedUri: null };
 
 export default function EditorScreen() {
   const router = useRouter();
   const { palette } = useJamboTheme();
-  const params = useLocalSearchParams<{ uri: string; width: string; height: string }>();
 
-  const sourceUri = params.uri;
-  const [croppedUri, setCroppedUri] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>('original');
+  // Copia a fila para estado local na montagem; dali em diante o editor e o
+  // dono dela. Um reload do app zera o modulo e cai no aviso mais abaixo.
+  const [images, setImages] = useState(getQueue);
+  const [index, setIndex] = useState(0);
+  const [decisions, setDecisions] = useState<Decision[]>(() => images.map(() => DEFAULT_DECISION));
+  const [staging, setStaging] = useState(false);
   const [saveSheetVisible, setSaveSheetVisible] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
   const [packs, setPacks] = useState<Pack[]>([]);
   const [newName, setNewName] = useState('');
   const [newAuthor, setNewAuthor] = useState('');
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
-  const displayedUri = mode === 'crop' && croppedUri ? croppedUri : sourceUri;
+  const total = images.length;
+  const current = images[index];
+  const decision = decisions[index] ?? DEFAULT_DECISION;
+  const mode = decision.mode;
+  const displayedUri = decision.croppedUri ?? current?.sourceUri;
+  const isLast = index >= total - 1;
+
+  function setCurrentDecision(value: Decision) {
+    setDecisions((previous) => previous.map((item, position) => (position === index ? value : item)));
+  }
 
   function cropperOptions(path: string) {
     return {
@@ -52,11 +77,20 @@ export default function EditorScreen() {
   }
 
   async function openCropper() {
+    if (!current || staging) return;
+    setStaging(true);
     try {
-      const result = await ImageCropPicker.openCropper(cropperOptions(sourceUri));
+      // A conversao para PNG roda SO aqui, e nao ao escolher as fotos: ela
+      // existe apenas porque o uCrop nao abre WebP (e a galeria esta cheia
+      // deles). Quem usa a imagem inteira nunca paga por ela — num lote de 12
+      // fotos isso evita 12 reencodes de vários MB jogados fora.
+      const staged = await stageSourceImage(current.sourceUri);
+      const result = await ImageCropPicker.openCropper(cropperOptions(staged));
       // O <Image> do preview so carrega com esquema; o recortador pode devolver caminho puro.
-      setCroppedUri(result.path.startsWith('file://') ? result.path : `file://${result.path}`);
-      setMode('crop');
+      setCurrentDecision({
+        mode: 'crop',
+        croppedUri: result.path.startsWith('file://') ? result.path : `file://${result.path}`,
+      });
     } catch (error) {
       // Cancelar o editor nativo tambem rejeita a Promise — so isso e silencioso.
       const code = typeof error === 'object' && error !== null && 'code' in error ? String((error as { code: unknown }).code) : '';
@@ -66,45 +100,114 @@ export default function EditorScreen() {
         'Não foi possível recortar',
         error instanceof Error && error.message ? error.message : 'O editor de recorte não abriu.',
       );
+    } finally {
+      setStaging(false);
     }
+  }
+
+  /** Descarta a imagem atual do lote — util quando uma das escolhidas nao presta. */
+  function skipCurrent() {
+    if (total <= 1) {
+      router.back();
+      return;
+    }
+    setImages((previous) => previous.filter((_, position) => position !== index));
+    setDecisions((previous) => previous.filter((_, position) => position !== index));
+    // Ao descartar a ultima, o indice precisa recuar para continuar valido.
+    setIndex((previous) => Math.min(previous, total - 2));
+  }
+
+  /** Saida rapida: manda o resto do lote como imagem inteira e vai salvar. */
+  function useWholeForRest() {
+    setDecisions((previous) =>
+      previous.map((item, position) => (position < index ? item : DEFAULT_DECISION)),
+    );
+    openSaveSheet();
   }
 
   async function openSaveSheet() {
     try {
       setPacks(await loadPacks());
       setSaveSheetVisible(true);
-    } catch {
-      Alert.alert('Não foi possível carregar', 'Tente prosseguir novamente.');
+    } catch (error) {
+      Alert.alert('Não foi possível carregar', storageErrorMessage(error));
     }
   }
 
-  async function makeSticker(): Promise<Sticker> {
-    const stickerId = `${Date.now()}-sticker`;
-    // displayedUri e o recorte escolhido (modo crop) ou a imagem inteira (modo original).
-    const built = await buildSticker(displayedUri, stickerId);
-    return {
-      id: stickerId,
-      originalUri: sourceUri,
-      processedUri: built.uri,
-      mode,
-      format: 'webp',
-      width: built.width,
-      height: built.height,
-    };
+  /**
+   * Gera todas as figurinhas do lote.
+   *
+   * Uma imagem problematica NAO descarta o lote: ela e contada em `failed` e o
+   * resto segue. Descartar 11 figurinhas boas porque a 7a falhou seria pior do
+   * que salvar 11 e avisar sobre uma.
+   */
+  async function buildAll(): Promise<{ stickers: Sticker[]; failed: number }> {
+    const stickers: Sticker[] = [];
+    let failed = 0;
+    setProgress({ done: 0, total });
+    try {
+      for (let position = 0; position < images.length; position++) {
+        const stickerId = newId('sticker');
+        const item = decisions[position] ?? DEFAULT_DECISION;
+        try {
+          // O recorte escolhido, ou a imagem de origem nos modos original/stretch.
+          const built = await buildSticker(
+            item.croppedUri ?? images[position].sourceUri,
+            stickerId,
+            item.mode,
+          );
+          stickers.push({
+            id: stickerId,
+            processedUri: built.uri,
+            mode: item.mode,
+            format: 'webp',
+            width: built.width,
+            height: built.height,
+          });
+        } catch (error) {
+          console.warn('[editor] falhou ao gerar a figurinha', position, error);
+          failed += 1;
+        }
+        setProgress({ done: position + 1, total });
+      }
+    } finally {
+      setProgress(null);
+    }
+    return { stickers, failed };
+  }
+
+  /** Navega para o pacote, avisando antes se alguma figurinha ficou pelo caminho. */
+  function finish(packId: string, failed: number) {
+    const go = () => router.replace({ pathname: '/pack/[id]', params: { id: packId } });
+    if (failed === 0) {
+      go();
+      return;
+    }
+    Alert.alert(
+      'Algumas imagens não deram',
+      `${failed} ${failed === 1 ? 'imagem não pôde' : 'imagens não puderam'} ser convertida${failed === 1 ? '' : 's'} em figurinha. O resto foi salvo.`,
+      [{ text: 'Entendi', onPress: go }],
+    );
   }
 
   async function addToPack(pack: Pack) {
     if (busy) return;
     setBusy(true);
     try {
-      const sticker = await makeSticker();
-      await mutatePacks((current) =>
-        current.map((item) => (item.id === pack.id ? { ...item, stickers: [...item.stickers, sticker] } : item)),
+      const { stickers, failed } = await buildAll();
+      if (stickers.length === 0) {
+        Alert.alert('Não foi possível gerar as figurinhas', 'Tente novamente com outras imagens.');
+        return;
+      }
+      await mutatePacks((currentPacks) =>
+        currentPacks.map((item) =>
+          item.id === pack.id ? { ...item, stickers: [...item.stickers, ...stickers] } : item,
+        ),
       );
       setSaveSheetVisible(false);
-      router.replace({ pathname: '/pack/[id]', params: { id: pack.id } });
-    } catch {
-      Alert.alert('Não foi possível salvar', 'Tente adicionar a figurinha novamente.');
+      finish(pack.id, failed);
+    } catch (error) {
+      Alert.alert('Não foi possível salvar', storageErrorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -120,36 +223,58 @@ export default function EditorScreen() {
     }
     setBusy(true);
     try {
-      const sticker = await makeSticker();
+      const { stickers, failed } = await buildAll();
+      if (stickers.length === 0) {
+        Alert.alert('Não foi possível gerar as figurinhas', 'Tente novamente com outras imagens.');
+        return;
+      }
       const pack: Pack = {
-        id: `${Date.now()}-pack`,
+        id: newId('pack'),
         name,
         author,
         // O URI persistido da figurinha sobrevive a limpeza de cache; o do preview nao.
-        iconUri: sticker.processedUri,
-        stickers: [sticker],
+        iconUri: stickers[0].processedUri,
+        stickers,
       };
-      await mutatePacks((current) => [...current, pack]);
+      await mutatePacks((currentPacks) => [...currentPacks, pack]);
       setCreateVisible(false);
       setSaveSheetVisible(false);
-      router.replace({ pathname: '/pack/[id]', params: { id: pack.id } });
-    } catch {
-      Alert.alert('Não foi possível salvar', 'Tente criar o pacote novamente.');
+      finish(pack.id, failed);
+    } catch (error) {
+      Alert.alert('Não foi possível salvar', storageErrorMessage(error));
     } finally {
       setBusy(false);
     }
+  }
+
+  // A fila vive em memoria: um reload do app no meio da edicao a perde. Sem
+  // este aviso a tela abriria com a area de imagem em branco, sem explicacao.
+  if (total === 0 || !current) {
+    return (
+      <SafeAreaView edges={['top', 'bottom']} style={[styles.screen, styles.empty, { backgroundColor: palette.bg }]}>
+        <Text style={[styles.emptyTitle, { color: palette.text }]}>Nenhuma imagem para editar</Text>
+        <Text style={[styles.emptyBody, { color: palette.textMuted }]}>
+          A seleção foi perdida, provavelmente porque o app recarregou. Escolha as fotos de novo.
+        </Text>
+        <PrimaryButton label="Escolher fotos" palette={palette} onPress={() => router.replace('/')} />
+      </SafeAreaView>
+    );
   }
 
   return (
     <SafeAreaView edges={['top', 'bottom']} style={[styles.screen, { backgroundColor: palette.bg }]}>
       <View style={styles.header}>
         <IconButton name="back" palette={palette} accessibilityLabel="Voltar" onPress={() => router.back()} />
-        <Text style={[styles.headerTitle, { color: palette.textSecondary }]}>Editar figurinha</Text>
+        <Text style={[styles.headerTitle, { color: palette.textSecondary }]}>
+          {total > 1 ? `Figurinha ${index + 1} de ${total}` : 'Editar figurinha'}
+        </Text>
         <Pressable
           onPress={openSaveSheet}
           accessibilityRole="button"
           style={({ pressed }) => [styles.headerCta, { backgroundColor: palette.accent }, pressed && styles.pressed]}>
-          <Text style={{ color: palette.onAccent, fontFamily: JamboFonts.bodyBold, fontSize: 14 }}>Prosseguir</Text>
+          <Text style={{ color: palette.onAccent, fontFamily: JamboFonts.bodyBold, fontSize: 14 }}>
+            {total > 1 ? 'Salvar tudo' : 'Prosseguir'}
+          </Text>
         </Pressable>
       </View>
 
@@ -159,11 +284,16 @@ export default function EditorScreen() {
           light={palette.checkerLight}
           dark={palette.checkerDark}
           style={[styles.canvas, { borderColor: palette.border }]}>
-          {/* `contain` nos dois modos porque o arquivo final e sempre a imagem centralizada
-              num quadrado transparente. Usar `cover` aqui mostrava um enquadramento
-              (ampliado, cortado) que o arquivo gerado nao tinha. */}
+          {/* O resizeMode espelha o que o arquivo final vai ser: `contain` quando a
+              imagem e centralizada num quadrado transparente (crop/original) e
+              `stretch` no modo Preencher. Nunca `cover`, que mostrava um
+              enquadramento ampliado e cortado que o arquivo gerado nao tinha. */}
           <View style={styles.imageArea}>
-            <Image source={{ uri: displayedUri }} style={styles.canvasImage} resizeMode="contain" />
+            <Image
+              source={{ uri: displayedUri }}
+              style={styles.canvasImage}
+              resizeMode={mode === 'stretch' ? 'stretch' : 'contain'}
+            />
           </View>
           <View style={[styles.dimensionBadge, { backgroundColor: palette.bg }]}>
             <Text style={{ color: palette.leaf, fontFamily: JamboFonts.monoMedium, fontSize: 10.5 }}>512 × 512</Text>
@@ -175,8 +305,9 @@ export default function EditorScreen() {
         <ToolTab
           palette={palette}
           icon="crop"
-          label="Recortar"
+          label={staging ? 'Abrindo...' : 'Recortar'}
           active={mode === 'crop'}
+          busy={staging}
           onPress={openCropper}
         />
         <ToolTab
@@ -184,7 +315,14 @@ export default function EditorScreen() {
           icon="square"
           label="Original"
           active={mode === 'original'}
-          onPress={() => setMode('original')}
+          onPress={() => setCurrentDecision(DEFAULT_DECISION)}
+        />
+        <ToolTab
+          palette={palette}
+          icon="expand"
+          label="Preencher"
+          active={mode === 'stretch'}
+          onPress={() => setCurrentDecision({ mode: 'stretch', croppedUri: null })}
         />
       </View>
 
@@ -192,20 +330,60 @@ export default function EditorScreen() {
 
       <View style={styles.footer}>
         <View style={styles.statusRow}>
-          <JamboIcon name="check" size={15} color={palette.leaf} />
-          <Text style={{ color: palette.leaf, fontFamily: JamboFonts.monoMedium, fontSize: 12 }}>
-            webp · comprimido até caber em 100 KB
+          {/* No modo Preencher a imagem e distorcida de proposito — avisar e mais
+              honesto do que deixar o usuario descobrir na figurinha pronta. */}
+          <JamboIcon
+            name={mode === 'stretch' ? 'warning' : 'check'}
+            size={15}
+            color={mode === 'stretch' ? palette.warning : palette.leaf}
+          />
+          <Text
+            style={{
+              color: mode === 'stretch' ? palette.warning : palette.leaf,
+              fontFamily: JamboFonts.monoMedium,
+              fontSize: 12,
+              flexShrink: 1,
+            }}>
+            {mode === 'stretch'
+              ? 'a imagem será esticada para preencher o quadrado'
+              : 'webp · comprimido até caber em 100 KB'}
           </Text>
         </View>
         <View style={styles.footerButtons}>
           <Pressable
-            onPress={() => router.back()}
+            onPress={skipCurrent}
             accessibilityRole="button"
             style={({ pressed }) => [styles.outlineButton, { borderColor: palette.accent }, pressed && styles.pressed]}>
-            <Text style={{ color: palette.accentSoft, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Outra imagem</Text>
+            <Text style={{ color: palette.accentSoft, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>
+              {total > 1 ? 'Descartar esta' : 'Outra imagem'}
+            </Text>
           </Pressable>
-          <PrimaryButton label="Prosseguir" palette={palette} onPress={openSaveSheet} style={styles.grow} />
+          {isLast ? (
+            <PrimaryButton
+              label={total > 1 ? 'Salvar tudo' : 'Prosseguir'}
+              palette={palette}
+              onPress={openSaveSheet}
+              style={styles.grow}
+            />
+          ) : (
+            <PrimaryButton
+              label="Próxima"
+              palette={palette}
+              onPress={() => setIndex((previous) => previous + 1)}
+              style={styles.grow}
+            />
+          )}
         </View>
+
+        {/* Saida rapida do lote: quem nao quer recortar o resto nao precisa
+            passar imagem por imagem so para chegar ao fim da fila. */}
+        {isLast ? null : (
+          <Pressable onPress={useWholeForRest} accessibilityRole="button" style={styles.restLink} hitSlop={6}>
+            <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 13.5 }}>
+              Usar a imagem inteira nas {total - index} restantes
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       <SaveSheet
@@ -213,6 +391,8 @@ export default function EditorScreen() {
         palette={palette}
         packs={packs}
         busy={busy}
+        needed={total}
+        progress={progress}
         onClose={() => setSaveSheetVisible(false)}
         onPick={addToPack}
         onCreate={() => {
@@ -242,19 +422,22 @@ function ToolTab({
   icon,
   label,
   active,
+  busy,
   onPress,
 }: {
   palette: JamboPalette;
-  icon: 'crop' | 'square';
+  icon: JamboIconName;
   label: string;
   active: boolean;
+  busy?: boolean;
   onPress: () => void;
 }) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={busy}
       accessibilityRole="button"
-      accessibilityState={{ selected: active }}
+      accessibilityState={{ selected: active, busy: Boolean(busy), disabled: Boolean(busy) }}
       style={({ pressed }) => [
         styles.tool,
         {
@@ -264,7 +447,11 @@ function ToolTab({
         },
         pressed && styles.pressed,
       ]}>
-      <JamboIcon name={icon} size={20} color={active ? palette.accentSoft : palette.textSecondary} />
+      {busy ? (
+        <ActivityIndicator size="small" color={active ? palette.accentSoft : palette.textSecondary} />
+      ) : (
+        <JamboIcon name={icon} size={20} color={active ? palette.accentSoft : palette.textSecondary} />
+      )}
       <Text
         style={{
           color: active ? palette.accentSoft : palette.textSecondary,
@@ -282,6 +469,8 @@ function SaveSheet({
   palette,
   packs,
   busy,
+  needed,
+  progress,
   onClose,
   onPick,
   onCreate,
@@ -290,6 +479,9 @@ function SaveSheet({
   palette: JamboPalette;
   packs: Pack[];
   busy: boolean;
+  /** Quantas figurinhas o lote vai adicionar — define se o pacote tem espaco. */
+  needed: number;
+  progress: { done: number; total: number } | null;
   onClose: () => void;
   onPick: (pack: Pack) => void;
   onCreate: () => void;
@@ -300,25 +492,37 @@ function SaveSheet({
       <View style={[styles.sheet, { backgroundColor: palette.surface, borderTopColor: palette.border }]}>
         <View style={[styles.grabber, { backgroundColor: palette.border }]} />
         <View style={styles.sheetTitleBlock}>
-          <Text style={[styles.sheetTitle, { color: palette.text }]}>Onde salvar a figurinha?</Text>
+          <View style={styles.sheetTitleRow}>
+            <Text style={[styles.sheetTitle, { color: palette.text }]}>
+              {needed > 1 ? `Onde salvar as ${needed} figurinhas?` : 'Onde salvar a figurinha?'}
+            </Text>
+            {busy ? <ActivityIndicator size="small" color={palette.accentSoft} /> : null}
+          </View>
           <Text style={[styles.sheetSubtitle, { color: palette.textMuted }]}>
-            Ela entra no pacote agora e você continua montando depois.
+            {progress
+              ? `Gerando ${progress.done} de ${progress.total} — quadrando e comprimindo até caber em 100 KB.`
+              : needed > 1
+                ? 'Elas entram no pacote agora e você continua montando depois.'
+                : 'Ela entra no pacote agora e você continua montando depois.'}
           </Text>
         </View>
 
         <View style={styles.sheetList}>
           {packs.map((pack) => {
-            const full = pack.stickers.length >= MAX_STICKERS;
+            // O lote inteiro precisa caber: aceitar um pacote com 2 vagas para
+            // 12 figurinhas estouraria o limite de 30 do WhatsApp.
+            const free = MAX_STICKERS - pack.stickers.length;
+            const fits = free >= needed;
             return (
               <Pressable
                 key={pack.id}
-                disabled={full || busy}
+                disabled={!fits || busy}
                 onPress={() => onPick(pack)}
                 accessibilityRole="button"
                 style={({ pressed }) => [
                   styles.packRow,
                   { backgroundColor: palette.surfaceElevated, borderColor: palette.border },
-                  full && styles.disabled,
+                  !fits && styles.disabled,
                   pressed && styles.pressed,
                 ]}>
                 <Checker
@@ -340,14 +544,18 @@ function SaveSheet({
                   </Text>
                   <Text
                     style={{
-                      color: full ? palette.textMuted : palette.accentSoft,
+                      color: fits ? palette.accentSoft : palette.textMuted,
                       fontFamily: JamboFonts.monoMedium,
                       fontSize: 12,
                     }}>
-                    {full ? `${MAX_STICKERS}/${MAX_STICKERS} · cheio` : `${pack.stickers.length}/${MAX_STICKERS} figurinhas`}
+                    {fits
+                      ? `${pack.stickers.length}/${MAX_STICKERS} figurinhas`
+                      : free === 0
+                        ? `${MAX_STICKERS}/${MAX_STICKERS} · cheio`
+                        : `só cabem ${free} · precisa de ${needed}`}
                   </Text>
                 </View>
-                {!full ? <JamboIcon name="chevronRight" size={18} color={palette.textMuted} /> : null}
+                {fits ? <JamboIcon name="chevronRight" size={18} color={palette.textMuted} /> : null}
               </Pressable>
             );
           })}
@@ -405,7 +613,7 @@ function CreatePackModal({
             placeholderTextColor={palette.textMuted}
             style={[styles.input, { color: palette.text, backgroundColor: palette.surfaceElevated, borderColor: palette.border }]}
           />
-          <PrimaryButton label={busy ? 'Criando...' : 'Criar pacote'} palette={palette} onPress={onConfirm} disabled={busy} />
+          <PrimaryButton label={busy ? 'Criando...' : 'Criar pacote'} palette={palette} onPress={onConfirm} busy={busy} />
           <Pressable onPress={onCancel} accessibilityRole="button" style={styles.sheetCancel}>
             <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Cancelar</Text>
           </Pressable>
@@ -417,6 +625,10 @@ function CreatePackModal({
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  empty: { alignItems: 'center', justifyContent: 'center', gap: 14, padding: 28 },
+  emptyTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 21, textAlign: 'center' },
+  emptyBody: { fontFamily: JamboFonts.body, fontSize: 14, lineHeight: 21, textAlign: 'center' },
+  restLink: { minHeight: 40, alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -472,6 +684,7 @@ const styles = StyleSheet.create({
   },
   grabber: { width: 42, height: 4, borderRadius: JamboRadius.pill, alignSelf: 'center' },
   sheetTitleBlock: { gap: 4 },
+  sheetTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   sheetTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 22, letterSpacing: -0.4 },
   sheetSubtitle: { fontFamily: JamboFonts.body, fontSize: 13.5, lineHeight: 20 },
   sheetList: { gap: 9 },

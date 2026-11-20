@@ -15,11 +15,13 @@ import {
   formatBytes,
   loadPacks,
   mutatePacks,
+  storageErrorMessage,
   type Pack,
   type Readiness,
   type ReadinessAction,
   type Sticker,
 } from '@/lib/packs';
+import { packFileErrorMessage, sharePackFile } from '@/lib/pack-file';
 import { deleteStickerFile, recompressSticker } from '@/lib/stickers';
 import { exportErrorMessage, exportPack, isWhatsAppAvailable, isWhatsAppModuleAvailable } from '@/lib/whatsapp';
 
@@ -32,6 +34,9 @@ export default function PackDetailScreen() {
   const [readiness, setReadiness] = useState<Readiness | null>(null);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [selected, setSelected] = useState<Sticker | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameName, setRenameName] = useState('');
@@ -46,7 +51,7 @@ export default function PackDetailScreen() {
 
   useEffect(() => {
     refresh()
-      .catch(() => Alert.alert('Não foi possível carregar', 'Tente abrir o pacote novamente.'))
+      .catch((error) => Alert.alert('Não foi possível carregar', storageErrorMessage(error)))
       .finally(() => setLoading(false));
   }, [refresh]);
 
@@ -92,17 +97,33 @@ export default function PackDetailScreen() {
     }
   }
 
+  /** Exporta o pacote como arquivo e abre a folha de compartilhamento. */
+  async function handleShare() {
+    if (!pack || sharing) return;
+    setSharing(true);
+    try {
+      await sharePackFile(pack);
+    } catch (error) {
+      Alert.alert('Não foi possível compartilhar', packFileErrorMessage(error));
+    } finally {
+      setSharing(false);
+    }
+  }
+
   function handleReadinessAction(action: ReadinessAction) {
     if (!pack || !readiness) return;
     if (action === 'add') {
-      router.push('/');
+      // navigate, e nao push: a aba Criar ja esta na pilha e empilha-la de
+      // novo deixa o botao voltar passando duas vezes pela mesma tela.
+      router.navigate('/');
       return;
     }
     compressOversized();
   }
 
   async function compressOversized() {
-    if (!pack || !readiness || readiness.oversized.length === 0) return;
+    if (!pack || !readiness || readiness.oversized.length === 0 || compressing) return;
+    setCompressing(true);
     try {
       const updated = await Promise.all(
         pack.stickers.map(async (sticker) => {
@@ -115,17 +136,26 @@ export default function PackDetailScreen() {
       Alert.alert('Figurinhas comprimidas', 'Todas cabem no limite de 100 KB agora.');
     } catch (error) {
       Alert.alert('Não foi possível comprimir', error instanceof Error ? error.message : 'Tente novamente.');
+    } finally {
+      setCompressing(false);
     }
   }
 
   async function removeSticker(sticker: Sticker) {
     if (!pack) return;
     const remaining = pack.stickers.filter((item) => item.id !== sticker.id);
-    await persist({
-      ...pack,
-      stickers: remaining,
-      iconUri: remaining[0]?.processedUri ?? pack.iconUri,
-    });
+    try {
+      // Grava primeiro, apaga depois: se a gravacao falhar, o arquivo ainda
+      // esta la e o pacote continua consistente.
+      await persist({
+        ...pack,
+        stickers: remaining,
+        iconUri: remaining[0]?.processedUri ?? pack.iconUri,
+      });
+    } catch (error) {
+      Alert.alert('Não foi possível excluir', storageErrorMessage(error));
+      return;
+    }
     deleteStickerFile(sticker.processedUri);
     setSelected(null);
   }
@@ -152,15 +182,22 @@ export default function PackDetailScreen() {
   }
 
   async function confirmRename() {
-    if (!pack) return;
+    if (!pack || renaming) return;
     const name = renameName.trim();
     const author = renameAuthor.trim();
     if (!name || !author) {
       Alert.alert('Preencha os dados', 'Informe o nome do pacote e o autor.');
       return;
     }
-    await persist({ ...pack, name, author });
-    setRenameVisible(false);
+    setRenaming(true);
+    try {
+      await persist({ ...pack, name, author });
+      setRenameVisible(false);
+    } catch {
+      Alert.alert('Não foi possível salvar', 'Tente renomear novamente.');
+    } finally {
+      setRenaming(false);
+    }
   }
 
   function confirmDelete() {
@@ -219,7 +256,12 @@ export default function PackDetailScreen() {
           </Text>
         </View>
 
-        <ReadinessCard palette={palette} readiness={readiness} onAction={handleReadinessAction} />
+        <ReadinessCard
+          palette={palette}
+          readiness={readiness}
+          onAction={handleReadinessAction}
+          compressing={compressing}
+        />
 
         <View style={styles.exportRow}>
           <PrimaryButton
@@ -235,10 +277,9 @@ export default function PackDetailScreen() {
             name="share"
             size={52}
             palette={palette}
-            accessibilityLabel="Compartilhar pacote"
-            onPress={() =>
-              Alert.alert('Em breve', 'O compartilhamento de pacotes entre amigos ainda não faz parte desta versão.')
-            }
+            accessibilityLabel="Compartilhar pacote como arquivo"
+            busy={sharing}
+            onPress={handleShare}
           />
         </View>
 
@@ -273,7 +314,7 @@ export default function PackDetailScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Adicionar figurinha"
-              onPress={() => router.push('/')}
+              onPress={() => router.navigate('/')}
               style={({ pressed }) => [styles.cell, pressed && styles.pressed]}>
               <View style={[styles.cellInner, styles.addCell, { borderColor: palette.borderDashed }]}>
                 <JamboIcon name="plusSmall" size={22} color={palette.accent} />
@@ -314,7 +355,7 @@ export default function PackDetailScreen() {
               placeholderTextColor={palette.textMuted}
               style={[styles.input, { color: palette.text, backgroundColor: palette.surfaceElevated, borderColor: palette.border }]}
             />
-            <PrimaryButton label="Salvar" palette={palette} onPress={confirmRename} />
+            <PrimaryButton label="Salvar" palette={palette} onPress={confirmRename} busy={renaming} />
             <Pressable onPress={() => setRenameVisible(false)} accessibilityRole="button" style={styles.dialogCancel}>
               <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Cancelar</Text>
             </Pressable>
@@ -329,10 +370,12 @@ function ReadinessCard({
   palette,
   readiness,
   onAction,
+  compressing,
 }: {
   palette: JamboPalette;
   readiness: Readiness;
   onAction: (action: ReadinessAction) => void;
+  compressing: boolean;
 }) {
   const ratioColor = readiness.ready ? palette.success : palette.warning;
   return (
@@ -369,10 +412,17 @@ function ReadinessCard({
             {item.action && item.actionLabel ? (
               <Pressable
                 onPress={() => onAction(item.action as ReadinessAction)}
+                disabled={compressing}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: compressing }}
                 hitSlop={8}>
-                <Text style={{ color: palette.accentSoft, fontFamily: JamboFonts.bodyBold, fontSize: 13 }}>
-                  {item.actionLabel}
+                <Text
+                  style={{
+                    color: compressing ? palette.textMuted : palette.accentSoft,
+                    fontFamily: JamboFonts.bodyBold,
+                    fontSize: 13,
+                  }}>
+                  {compressing && item.action === 'compress' ? 'Comprimindo...' : item.actionLabel}
                 </Text>
               </Pressable>
             ) : null}

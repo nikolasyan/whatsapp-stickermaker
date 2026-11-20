@@ -29,6 +29,10 @@ export type JamboPalette = {
   warningSurface: string;
   success: string;
   successSurface: string;
+  /** Borda/enfase de acao destrutiva (excluir pacote, excluir figurinha). */
+  danger: string;
+  /** Texto sobre o fundo da tela em acao destrutiva. */
+  dangerSoft: string;
   /** Xadrez que representa transparencia, em tons de jambo. */
   checkerLight: string;
   checkerDark: string;
@@ -55,6 +59,8 @@ const dark: JamboPalette = {
   warningSurface: '#3D2A0C',
   success: '#4FD98E',
   successSurface: '#0F3A24',
+  danger: '#FF8073',
+  dangerSoft: '#FFA79E',
   checkerLight: '#2A1720',
   checkerDark: '#160D12',
   tabBar: '#0C0709',
@@ -80,6 +86,10 @@ const light: JamboPalette = {
   warningSurface: '#FBEBD2',
   success: '#14532D',
   successSurface: '#DFF4E8',
+  // Vermelho escuro: os tons do escuro (#FF8073) nasceram para fundo preto e
+  // ficam ilegiveis sobre o bg claro (#FFF9F6).
+  danger: '#B3261E',
+  dangerSoft: '#B3261E',
   checkerLight: '#FFE0E5',
   checkerDark: '#FFF9F6',
   tabBar: '#FFFFFF',

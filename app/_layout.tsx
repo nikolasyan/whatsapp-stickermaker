@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
+import { clearTransientCache } from '@/lib/stickers';
 
 export const unstable_settings = {
   anchor: '(tabs)',
@@ -41,6 +42,13 @@ export default function RootLayout() {
     // Some com a splash tambem em caso de erro, senao o app trava numa tela branca.
     if (fontsLoaded || fontError) SplashScreen.hideAsync().catch(() => {});
   }, [fontsLoaded, fontError]);
+
+  useEffect(() => {
+    // Uma vez por abertura: e o unico momento garantido em que nenhum
+    // intermediario de imagem esta em uso. E sincrono, mas sao duas pastas e
+    // uma listagem — se algum dia pesar, da para mover para um worklet.
+    clearTransientCache();
+  }, []);
 
   if (!fontsLoaded && !fontError) return null;
 

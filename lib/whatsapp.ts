@@ -58,11 +58,16 @@ export async function isWhatsAppAvailable(): Promise<boolean> {
  */
 export async function exportPack(pack: Pack): Promise<ExportResult> {
   if (!nativeModule) throw new Error('O módulo nativo do WhatsApp não está disponível nesta build.');
+  if (pack.stickers.length === 0) throw new Error('Este pacote está vazio.');
   return nativeModule.addStickerPack({
     identifier: `pack_${pack.id.replace(/[^a-zA-Z0-9_]/g, '_')}`,
     title: pack.name,
     author: pack.author,
-    trayImage: pack.stickers[0].processedUri,
+    // `iconUri` e a capa do pacote: e o que o app mantem atualizado (ao remover
+    // uma figurinha) e o que ja aparece como miniatura na folha de salvar.
+    // A exportacao usava stickers[0] e ignorava o campo, entao a capa mostrada
+    // no app e a que ia para o WhatsApp podiam divergir.
+    trayImage: pack.iconUri || pack.stickers[0].processedUri,
     ...PUBLISHER,
     stickers: pack.stickers.map((sticker) => ({ url: sticker.processedUri })),
   });
