@@ -5,12 +5,9 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "appdefigurinhas",
+    "scheme": "jambo",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true
-    },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -20,15 +17,12 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.appdefigurinhas"
-    },
-    "web": {
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "package": "com.nikolasyan.jambo"
     },
     "plugins": [
       "expo-router",
       "./plugins/with-whatsapp-stickers",
+      "./plugins/with-ucrop-repository",
       [
         "expo-splash-screen",
         {
