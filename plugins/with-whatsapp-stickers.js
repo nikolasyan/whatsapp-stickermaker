@@ -47,9 +47,15 @@ function withStickerSources(config) {
       );
 
       fs.mkdirSync(targetDir, { recursive: true });
-      const sources = fs.readdirSync(SOURCE_DIR).filter((file) => file.endsWith('.java'));
+      // .kt tambem: a biblioteca de WebP animado e Kotlin com argumentos
+      // default, e o WebPConfig dela tem construtor de 28 parametros boxed.
+      // Chamar isso de Java exigiria 28 nulls posicionais; em Kotlin e uma
+      // linha legivel. O Kotlin ja esta no build (MainApplication.kt).
+      const sources = fs
+        .readdirSync(SOURCE_DIR)
+        .filter((file) => file.endsWith('.java') || file.endsWith('.kt'));
       if (sources.length === 0) {
-        throw new Error(`with-whatsapp-stickers: nenhum .java encontrado em ${SOURCE_DIR}`);
+        throw new Error(`with-whatsapp-stickers: nenhum .java nem .kt encontrado em ${SOURCE_DIR}`);
       }
 
       for (const file of sources) {

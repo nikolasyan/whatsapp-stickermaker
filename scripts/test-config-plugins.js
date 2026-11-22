@@ -70,8 +70,17 @@ function loadPlugin(file, config) {
         mods.manifest = fn;
         return cfg;
       },
+      // Os dois mods de gradle caem no mesmo slot: nenhum plugin usa ambos.
       withProjectBuildGradle: (cfg, fn) => {
         mods.gradle = fn;
+        return cfg;
+      },
+      withAppBuildGradle: (cfg, fn) => {
+        mods.gradle = fn;
+        return cfg;
+      },
+      withGradleProperties: (cfg, fn) => {
+        mods.properties = fn;
         return cfg;
       },
     },
@@ -152,6 +161,127 @@ apply plugin: "expo-root-project"
   });
 }
 
+// ================================================================ with-webp-encoder
+
+console.log('\n== with-webp-encoder (dependencia de WebP animado) ==');
+{
+  const { gradle, properties } = loadPlugin('with-webp-encoder.js', {});
+  const DEP = 'com.aureusapps.android:webp-android:1.1.2';
+
+  check('CRITICO: liga expo.webp.animated (sem isso a figurinha fica invisivel)', () => {
+    // O template vem com false, e nesse estado o <Image> do RN nao desenha um
+    // WebP animado — a figurinha aparece em branco na grade, sem erro algum.
+    const resultado = properties({
+      modResults: [{ type: 'property', key: 'expo.webp.animated', value: 'false' }],
+    }).modResults;
+    const item = resultado.find((p) => p.key === 'expo.webp.animated');
+    assert(item, 'a propriedade desapareceu');
+    assert(item.value === 'true', 'ficou em ' + item.value);
+  });
+
+  check('cria a propriedade quando ela nao existe', () => {
+    const resultado = properties({ modResults: [] }).modResults;
+    const item = resultado.find((p) => p.key === 'expo.webp.animated');
+    assert(item && item.value === 'true', 'nao criou a propriedade');
+  });
+
+  check('nao duplica a propriedade ao reaplicar', () => {
+    let estado = { modResults: [] };
+    estado = properties(estado);
+    estado = properties(estado);
+    const todas = estado.modResults.filter((p) => p.key === 'expo.webp.animated');
+    assert(todas.length === 1, 'duplicou: ' + todas.length);
+  });
+  const ANCHOR = 'implementation("com.facebook.react:react-android")';
+
+  const template = `apply plugin: "com.android.application"
+
+android {
+    namespace '${ANDROID_PACKAGE}'
+}
+
+dependencies {
+    // The version of react-native is set by the React Native Gradle Plugin
+    ${ANCHOR}
+
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    }
+}
+`;
+
+  let aplicado;
+  check('adiciona a dependencia no app/build.gradle', () => {
+    aplicado = gradle({ modResults: { language: 'groovy', contents: template } }).modResults.contents;
+    assert(aplicado.includes(`implementation("${DEP}")`), 'nao adicionou a dependencia');
+  });
+
+  check('fica DENTRO do bloco dependencies', () => {
+    const bloco = aplicado.match(/dependencies \{[\s\S]*?\n\}/)[0];
+    assert(bloco.includes(DEP), 'caiu fora do bloco dependencies');
+  });
+
+  check('idempotente (o prebuild reaplica os mods)', () => {
+    const duas = gradle({ modResults: { language: 'groovy', contents: aplicado } }).modResults.contents;
+    assert((duas.match(/webp-android/g) || []).length === 1, 'duplicou a webp-android');
+    assert((duas.match(/animated-base/g) || []).length === 1, 'duplicou a animated-base');
+  });
+
+  check('CRITICO: completa a dependencia que falta quando a outra ja existe', () => {
+    // Este caso me pegou de verdade: a checagem de idempotencia olhava so a
+    // webp-android, entao um android/ ja processado nunca recebia a
+    // animated-base adicionada depois — o prebuild dizia ok e o build quebrava.
+    const soWebp = template.replace(ANCHOR, `${ANCHOR}\n    implementation("com.aureusapps.android:webp-android:1.1.2")`);
+    const corrigido = gradle({ modResults: { language: 'groovy', contents: soWebp } }).modResults.contents;
+    assert(corrigido.includes('animated-base'), 'nao completou a dependencia que faltava');
+    assert((corrigido.match(/webp-android/g) || []).length === 1, 'duplicou a que ja existia');
+  });
+
+  check('falha alto se o template do Expo mudar', () => {
+    let lancou = false;
+    try {
+      gradle({ modResults: { language: 'groovy', contents: 'dependencies {\n}\n' } });
+    } catch {
+      lancou = true;
+    }
+    assert(lancou, 'aceitou em silencio um build.gradle sem a ancora');
+  });
+
+  check('falha alto se o build.gradle virar Kotlin DSL', () => {
+    let lancou = false;
+    try {
+      gradle({ modResults: { language: 'kt', contents: template } });
+    } catch {
+      lancou = true;
+    }
+    assert(lancou, 'aceitou um .kts como se fosse Groovy');
+  });
+
+  check('a versao fixada e a que foi auditada no AAR', () => {
+    // Trocar de versao exige reauditar ABIs, tamanho e transitivas; o teste
+    // existe para que a troca seja uma decisao consciente, nao um acidente.
+    assert(aplicado.includes('webp-android:1.1.2'), 'versao diferente da auditada');
+  });
+
+  check('CRITICO: adiciona animated-base (supertipos do GifImage)', () => {
+    // Sem isto o Kotlin nao compila: "Cannot access 'AnimatedImage' which is a
+    // supertype of 'GifImage'". O animated-gif entra pelo template do Expo, mas
+    // o animated-base e transitiva de runtime dele e fica fora do classpath de
+    // compilacao.
+    assert(aplicado.includes('com.facebook.fresco:animated-base'), 'nao adicionou o animated-base');
+  });
+
+  check('a versao do Fresco segue a do Expo, interpolada pelo Groovy', () => {
+    // Em aspas duplas o Groovy interpola ${...}; se virar aspas simples ou se o
+    // JS interpolar isso na geracao, a dependencia nao resolve.
+    assert(
+      aplicado.includes('implementation("com.facebook.fresco:animated-base:${expoLibs.versions.fresco.get()}")'),
+      'a interpolacao do Groovy nao sobreviveu: ' +
+        (aplicado.match(/animated-base[^\n]*/) || ['(ausente)'])[0],
+    );
+  });
+}
+
 // =========================================================== with-whatsapp-stickers
 
 console.log('\n== with-whatsapp-stickers (package: ' + ANDROID_PACKAGE + ') ==');
@@ -164,16 +294,32 @@ console.log('\n== with-whatsapp-stickers (package: ' + ANDROID_PACKAGE + ') ==')
     sources({ ...config, modRequest: { platformProjectRoot: root } });
     const javaDir = path.join(root, 'app', 'src', 'main', 'java', ...ANDROID_PACKAGE.split('.'), 'whatsapp');
 
-    check('copia os fontes Java para o caminho do applicationId', () => {
+    // Dinamico de proposito: cobre tanto .java quanto .kt sem precisar
+    // atualizar uma contagem a cada arquivo nativo novo.
+    const esperados = fs
+      .readdirSync(path.join(PROJECT_ROOT, 'plugins', 'android'))
+      .filter((f) => f.endsWith('.java') || f.endsWith('.kt'))
+      .sort();
+
+    check('copia TODOS os fontes nativos para o caminho do applicationId', () => {
       assert(fs.existsSync(javaDir), 'diretorio ausente: ' + javaDir);
-      assert(fs.readdirSync(javaDir).length === 3, 'esperava 3 .java, achou ' + fs.readdirSync(javaDir).join(','));
+      assert(esperados.length > 0, 'nenhum fonte em plugins/android');
+      const copiados = fs.readdirSync(javaDir).sort();
+      assert(
+        JSON.stringify(copiados) === JSON.stringify(esperados),
+        'esperava [' + esperados.join(',') + '] e achou [' + copiados.join(',') + ']',
+      );
     });
 
-    check('CRITICO: __PACKAGE__ resolvido em todos os .java', () => {
+    check('CRITICO: __PACKAGE__ resolvido em todos os fontes', () => {
       for (const file of fs.readdirSync(javaDir)) {
         const texto = fs.readFileSync(path.join(javaDir, file), 'utf8');
         assert(!texto.includes('__PACKAGE__'), file + ' ficou com o token nao resolvido');
-        assert(texto.includes('package ' + ANDROID_PACKAGE + '.whatsapp;'), file + ' com declaracao de package errada');
+        // Java exige ponto e virgula na declaracao de package, Kotlin nao.
+        const declaracao = file.endsWith('.kt')
+          ? 'package ' + ANDROID_PACKAGE + '.whatsapp'
+          : 'package ' + ANDROID_PACKAGE + '.whatsapp;';
+        assert(texto.includes(declaracao), file + ' com declaracao de package errada');
       }
     });
 
