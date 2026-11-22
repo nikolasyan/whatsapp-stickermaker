@@ -111,13 +111,48 @@ não um booleano. Valor inválido faz o campo desaparecer em vez de virar `0`: u
 figurinha "animada com duração zero" entraria num pacote animado e faria o
 WhatsApp recusar o pacote todo.
 
-**Ainda não existe o encoder.** Não há API no Android para escrever WebP
-animado (`Bitmap.compress(WEBP)` só faz estático), então criar animada a partir
-de vídeo ou GIF depende da `WebPAnimEncoder` da libwebp — biblioteca de
-terceiros ou compilar no NDK. A extração de frames, por outro lado, já está
-coberta sem dependência nova: `MediaMetadataRetriever` para vídeo e
-`com.facebook.animated.gif.GifImage` (que o Fresco já traz via
-`expo.gif.enabled=true`) para GIF.
+### Animada precisa de DUAS coisas: gerar e poder ver
+
+Não há API no Android para escrever WebP animado — `Bitmap.compress(WEBP)` só
+faz estático. O encoder vive na libwebpmux, e vem do binding JNI
+`com.aureusapps.android:webp-android`, adicionado em
+[`plugins/with-webp-encoder.js`](plugins/with-webp-encoder.js) (que registra no
+cabeçalho a auditoria do AAR feita antes de adotar, e o risco aceito).
+
+Esse plugin liga **três** coisas, e as duas últimas foram descobertas quebrando:
+
+| | |
+|---|---|
+| `webp-android` | o encoder |
+| `fresco:animated-base` | supertipos de `GifImage`; sem ele o **Kotlin não compila** |
+| `expo.webp.animated=true` | sem ele a figurinha fica **invisível** na grade, sem erro |
+
+A decodificação do GIF **não** custou dependência: `GifImage` do Fresco já está
+no APK porque o template liga `expo.gif.enabled=true`. Para vídeo, o
+`MediaMetadataRetriever` resolve igualmente sem dependência — ainda não
+implementado.
+
+### A escada de compressão da animada tem duas dimensões
+
+500 KB em 512×512 é apertado. Primeiro a qualidade; esgotada ela, descarte de
+frames alternados somando a duração no vizinho (para não acelerar a animação).
+
+A escada **não** começa em 80: medido no aparelho, cada tentativa custa ~7 s num
+GIF de 90 frames, e descer a escada inteira levava 30 s. A entrada é estimada
+pelo orçamento por frame — 90 frames caíram de 30,4 s para 5,7 s. Quando o
+resultado fica abaixo de metade do orçamento, uma tentativa na qualidade acima
+recupera qualidade (medido entregando q65 no lugar de q50).
+
+A estimativa se apoia em **duas amostras, não numa curva**. A escada abaixo do
+ponto de entrada continua inteira, então errar por otimismo custa uma tentativa,
+nunca o resultado.
+
+**Cuidado ao mexer nessa escada:** ela reusa o mesmo arquivo de destino dezenas
+de vezes. Apagar o destino antes de *cada* tentativa não é higiene, é correção —
+sem isso o tamanho lido fica preso no da primeira tentativa, nenhuma qualidade
+"cabe" e o erro final culpa a animação. E se a tentativa de melhoria estourar o
+limite, reescrever com a qualidade que cabia é obrigatório: o arquivo grande
+ficou no destino.
 
 ### O emoji é opcional no app, mas não no WhatsApp
 
@@ -204,7 +239,7 @@ versões anteriores gravaram.
 
 ```
 app/                   telas (expo-router)
-  (tabs)/index.tsx     Criar: escolhe fotos (até 30) e enfileira no editor
+  (tabs)/index.tsx     Criar: Imagem ou Animada; escolhe e enfileira no editor
   (tabs)/packs.tsx     lista de pacotes, importar de arquivo
   editor.tsx           fila de edição: recorte / original / preencher, por figurinha
   pack/[id].tsx        pacote: prontidão, exportar ao WhatsApp, compartilhar
@@ -215,9 +250,11 @@ lib/
   sticker-queue.ts     entrega das fotos escolhidas para o editor
   whatsapp.ts          ponte com o módulo nativo de exportação
 plugins/
-  with-whatsapp-stickers.js   classes Java, MainApplication, manifest
-  with-ucrop-repository.js    repositório JitPack
-  android/*.java              fontes nativos (token __PACKAGE__)
+  with-whatsapp-stickers.js   fontes nativos, MainApplication, manifest
+  with-ucrop-repository.js    repositório JitPack (uCrop)
+  with-webp-encoder.js        encoder de WebP animado + decodificação no Fresco
+  android/*.java              exportação para o WhatsApp (token __PACKAGE__)
+  android/*.kt                encoder de animada (Kotlin: a lib exige)
 scripts/               testes (node puro, sem jest)
 ```
 
