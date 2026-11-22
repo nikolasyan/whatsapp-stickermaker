@@ -123,14 +123,22 @@ async function padToSquare(sourceUri: string): Promise<string> {
 }
 
 /** Comprime para WebP baixando a qualidade ate caber no limite do WhatsApp. */
-async function encodeWithinLimit(sourceUri: string, stickerId: string): Promise<BuiltSticker> {
+async function encodeWithinLimit(
+  sourceUri: string,
+  stickerId: string,
+  // Parametrizado porque o teto do WhatsApp depende do tipo: 100 KB estatica,
+  // 500 KB animada. Figurinha animada nao passa por aqui (este caminho e do
+  // expo-image-manipulator, que so faz WebP estatico), mas o limite ja fica
+  // explicito em vez de embutido na mensagem de erro.
+  limitBytes: number = MAX_STICKER_BYTES,
+): Promise<BuiltSticker> {
   for (const quality of QUALITY_STEPS) {
     const result = await manipulateAsync(sourceUri, [{ resize: { width: STICKER_SIDE, height: STICKER_SIDE } }], {
       compress: quality,
       format: SaveFormat.WEBP,
     });
     const bytes = new File(result.uri).size;
-    if (bytes <= MAX_STICKER_BYTES) {
+    if (bytes <= limitBytes) {
       const uri = persistSticker(result.uri, stickerId);
       // Já copiado para o diretorio permanente; a copia no cache nao serve mais.
       deleteQuietly(result.uri);
@@ -141,7 +149,7 @@ async function encodeWithinLimit(sourceUri: string, stickerId: string): Promise<
     deleteQuietly(result.uri);
   }
 
-  throw new Error('Figurinha excede o limite de 100 KB');
+  throw new Error(`Figurinha excede o limite de ${Math.round(limitBytes / 1024)} KB`);
 }
 
 /**

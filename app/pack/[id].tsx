@@ -5,6 +5,7 @@ import { Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Checker } from '@/components/jambo/checker';
+import { EmojiPicker } from '@/components/jambo/emoji-picker';
 import { JamboIcon } from '@/components/jambo/icons';
 import { IconButton, OutlineButton, PrimaryButton } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius, WHATSAPP_GREEN, WHATSAPP_GREEN_ON, type JamboPalette } from '@/constants/jambo-theme';
@@ -13,6 +14,7 @@ import {
   MAX_STICKERS,
   computeReadiness,
   formatBytes,
+  isAnimatedPack,
   loadPacks,
   mutatePacks,
   storageErrorMessage,
@@ -37,7 +39,10 @@ export default function PackDetailScreen() {
   const [sharing, setSharing] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [renaming, setRenaming] = useState(false);
-  const [selected, setSelected] = useState<Sticker | null>(null);
+  // Guarda o ID, nao a figurinha: a folha precisa refletir o que foi salvo
+  // (emojis, recompressao) e um snapshot ficaria desatualizado.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [emojiTargetId, setEmojiTargetId] = useState<string | null>(null);
   const [renameVisible, setRenameVisible] = useState(false);
   const [renameName, setRenameName] = useState('');
   const [renameAuthor, setRenameAuthor] = useState('');
@@ -54,6 +59,9 @@ export default function PackDetailScreen() {
       .catch((error) => Alert.alert('Não foi possível carregar', storageErrorMessage(error)))
       .finally(() => setLoading(false));
   }, [refresh]);
+
+  const selected = selectedId ? (pack?.stickers.find((item) => item.id === selectedId) ?? null) : null;
+  const emojiTarget = emojiTargetId ? (pack?.stickers.find((item) => item.id === emojiTargetId) ?? null) : null;
 
   async function persist(next: Pack) {
     await mutatePacks((packs) => packs.map((item) => (item.id === next.id ? next : item)));
@@ -157,7 +165,24 @@ export default function PackDetailScreen() {
       return;
     }
     deleteStickerFile(sticker.processedUri);
-    setSelected(null);
+    setSelectedId(null);
+  }
+
+  /** Lista vazia volta ao padrao: o campo sai do objeto em vez de virar []. */
+  async function saveEmojis(target: Sticker, emojis: string[]) {
+    if (!pack) return;
+    const stickers = pack.stickers.map((item) => {
+      if (item.id !== target.id) return item;
+      const { emojis: previous, ...rest } = item;
+      void previous;
+      return emojis.length > 0 ? { ...rest, emojis } : rest;
+    });
+    setEmojiTargetId(null);
+    try {
+      await persist({ ...pack, stickers });
+    } catch (error) {
+      Alert.alert('Não foi possível salvar', storageErrorMessage(error));
+    }
   }
 
   async function downloadSticker(sticker: Sticker) {
@@ -252,7 +277,8 @@ export default function PackDetailScreen() {
         <View style={styles.titleBlock}>
           <Text style={[styles.title, { color: palette.text }]}>{pack.name}</Text>
           <Text style={[styles.meta, { color: palette.textMuted }]}>
-            por {pack.author} · {pack.stickers.length}/{MAX_STICKERS} figurinhas
+            por {pack.author} · {pack.stickers.length}/{MAX_STICKERS}{' '}
+            {isAnimatedPack(pack) ? 'animadas' : 'figurinhas'}
           </Text>
         </View>
 
@@ -290,7 +316,7 @@ export default function PackDetailScreen() {
               <Pressable
                 key={sticker.id}
                 accessibilityRole="button"
-                onPress={() => setSelected(sticker)}
+                onPress={() => setSelectedId(sticker.id)}
                 style={({ pressed }) => [styles.cell, pressed && styles.pressed]}>
                 <Checker
                   cell={16}
@@ -332,10 +358,21 @@ export default function PackDetailScreen() {
       <StickerSheet
         sticker={selected}
         palette={palette}
-        onClose={() => setSelected(null)}
+        onClose={() => setSelectedId(null)}
         onDownload={downloadSticker}
         onDelete={removeSticker}
+        onEditEmojis={(sticker) => setEmojiTargetId(sticker.id)}
       />
+
+      {/* Montado so quando aberto: o estado inicial do seletor vale por abertura. */}
+      {emojiTarget ? (
+        <EmojiPicker
+          palette={palette}
+          initial={emojiTarget.emojis ?? []}
+          onCancel={() => setEmojiTargetId(null)}
+          onConfirm={(emojis) => saveEmojis(emojiTarget, emojis)}
+        />
+      ) : null}
 
       <Modal visible={renameVisible} transparent animationType="fade" onRequestClose={() => setRenameVisible(false)}>
         <View style={[styles.centerScrim, { backgroundColor: palette.scrim }]}>
@@ -439,12 +476,14 @@ function StickerSheet({
   onClose,
   onDownload,
   onDelete,
+  onEditEmojis,
 }: {
   sticker: Sticker | null;
   palette: JamboPalette;
   onClose: () => void;
   onDownload: (sticker: Sticker) => void;
   onDelete: (sticker: Sticker) => void;
+  onEditEmojis: (sticker: Sticker) => void;
 }) {
   return (
     <Modal visible={sticker !== null} transparent animationType="slide" onRequestClose={onClose}>
@@ -455,6 +494,30 @@ function StickerSheet({
           <Checker cell={20} light={palette.checkerLight} dark={palette.checkerDark} style={styles.sheetPreview}>
             <Image source={{ uri: sticker.processedUri }} style={styles.sheetImage} resizeMode="contain" />
           </Checker>
+
+          <Pressable
+            onPress={() => onEditEmojis(sticker)}
+            accessibilityRole="button"
+            accessibilityLabel="Escolher os emojis desta figurinha"
+            style={({ pressed }) => [
+              styles.emojiRow,
+              { backgroundColor: palette.surfaceElevated, borderColor: palette.border },
+              pressed && styles.pressed,
+            ]}>
+            <View style={styles.emojiRowInfo}>
+              <Text style={[styles.emojiRowLabel, { color: palette.textMuted }]}>
+                Emojis da busca no WhatsApp
+              </Text>
+              {sticker.emojis?.length ? (
+                <Text style={styles.emojiRowValue}>{sticker.emojis.join('  ')}</Text>
+              ) : (
+                <Text style={{ color: palette.textSecondary, fontFamily: JamboFonts.body, fontSize: 14 }}>
+                  padrão · 😀
+                </Text>
+              )}
+            </View>
+            <JamboIcon name="pencil" size={17} color={palette.accentSoft} />
+          </Pressable>
 
           <PrimaryButton label="Baixar imagem" palette={palette} onPress={() => onDownload(sticker)} />
           <OutlineButton label="Excluir figurinha" tone="danger" palette={palette} onPress={() => onDelete(sticker)} />
@@ -508,6 +571,19 @@ const styles = StyleSheet.create({
   },
   grabber: { width: 42, height: 4, borderRadius: JamboRadius.pill, alignSelf: 'center' },
   sheetPreview: { height: 220, borderRadius: JamboRadius.lg },
+  emojiRow: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingHorizontal: 14,
+    borderRadius: JamboRadius.md,
+    borderWidth: 1,
+  },
+  emojiRowInfo: { flex: 1, gap: 3 },
+  emojiRowLabel: { fontFamily: JamboFonts.bodySemi, fontSize: 11.5, letterSpacing: 0.3 },
+  emojiRowValue: { fontSize: 21 },
   sheetImage: { width: '100%', height: '100%' },
   dialog: { width: '100%', maxWidth: 360, borderRadius: JamboRadius.xl, borderWidth: 1, padding: 22, gap: 12 },
   dialogTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 20 },

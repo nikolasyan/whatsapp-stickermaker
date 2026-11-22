@@ -10,7 +10,14 @@ import { PrimaryButton, StatusPill } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
 import { importPackFromFile, packFileErrorMessage } from '@/lib/pack-file';
-import { MAX_STICKERS, computeReadiness, loadPacks, storageErrorMessage, type Pack } from '@/lib/packs';
+import {
+  MAX_STICKERS,
+  computeReadiness,
+  isAnimatedPack,
+  loadPacks,
+  storageErrorMessage,
+  type Pack,
+} from '@/lib/packs';
 
 const THUMB_SLOTS = 4;
 
@@ -168,7 +175,8 @@ export default function PacksScreen() {
                     {pack.name}
                   </Text>
                   <Text style={[styles.cardMeta, { color: palette.textMuted }]} numberOfLines={1}>
-                    {pack.stickers.length}/{MAX_STICKERS} · por {pack.author}
+                    {pack.stickers.length}/{MAX_STICKERS}
+                    {isAnimatedPack(pack) ? ' · animado' : ''} · por {pack.author}
                   </Text>
                 </View>
                 {warnings > 0 ? (

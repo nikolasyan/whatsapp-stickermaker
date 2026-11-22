@@ -1,6 +1,6 @@
 import { NativeModules } from 'react-native';
 
-import type { Pack } from '@/lib/packs';
+import { isAnimatedPack, type Pack } from '@/lib/packs';
 
 export type ExportResult = { status: 'added' | 'cancelled' | 'rejected'; error?: string };
 
@@ -15,8 +15,14 @@ type WhatsAppStickerModule = {
     publisherURL: string;
     privacyPolicyURL: string;
     licenseURL: string;
-    // Sem `emoji`: o modulo nativo aplica o emoji padrao que o WhatsApp exige.
-    stickers: { url: string }[];
+    /**
+     * Vira `animated_sticker_pack` no metadata.json. A especificacao diz que o
+     * campo e "required for animated sticker packs, optional for static".
+     */
+    animated: boolean;
+    // `emojis` e opcional: ausente ou vazio, o modulo nativo aplica o padrao
+    // que o WhatsApp exige (ele recusa o pacote com a lista vazia).
+    stickers: { url: string; emojis?: string[] }[];
   }): Promise<ExportResult>;
 };
 
@@ -68,7 +74,12 @@ export async function exportPack(pack: Pack): Promise<ExportResult> {
     // A exportacao usava stickers[0] e ignorava o campo, entao a capa mostrada
     // no app e a que ia para o WhatsApp podiam divergir.
     trayImage: pack.iconUri || pack.stickers[0].processedUri,
+    animated: isAnimatedPack(pack),
     ...PUBLISHER,
-    stickers: pack.stickers.map((sticker) => ({ url: sticker.processedUri })),
+    stickers: pack.stickers.map((sticker) => ({
+      url: sticker.processedUri,
+      // Sem emoji escolhido, o campo vai ausente e o nativo decide o padrao.
+      ...(sticker.emojis?.length ? { emojis: sticker.emojis } : {}),
+    })),
   });
 }

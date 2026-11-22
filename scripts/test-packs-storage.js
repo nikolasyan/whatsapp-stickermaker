@@ -250,6 +250,93 @@ const umPacote = (over) =>
     assert(packs.computeReadiness(umPacote()).ready === false, 'disse que esta pronto');
   });
 
+  console.log('\n== PACOTE ANIMADO (regra: estatico XOR animado, limites diferentes) ==');
+  const animada = (over) =>
+    Object.assign({ id: 's1', processedUri: '/doc/s1.webp', mode: 'original', format: 'webp', width: 512, height: 512, durationMs: 2000, frameCount: 20 }, over || {});
+  const estatica = (over) =>
+    Object.assign({ id: 's1', processedUri: '/doc/s1.webp', mode: 'crop', format: 'webp', width: 512, height: 512 }, over || {});
+  const itemDe = (r, id) => r.items.find((i) => i.id === id);
+
+  check('CRITICO: pacote animado usa o teto de 500 KB, nao 100 KB', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 150 * 1024); // passaria de 100 KB
+    const r = packs.computeReadiness(umPacote({ animated: true, stickers: [animada()] }));
+    assert(!r.oversized.includes('s1'), '150 KB foi marcado como grande num pacote animado');
+    assert(itemDe(r, 'size').label.includes('500 KB'), 'rotulo: ' + itemDe(r, 'size').label);
+  });
+  check('pacote animado acima de 500 KB e marcado', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 600 * 1024);
+    const r = packs.computeReadiness(umPacote({ animated: true, stickers: [animada()] }));
+    assert(r.oversized.includes('s1'), 'nao marcou 600 KB');
+  });
+  check('pacote estatico continua com o teto de 100 KB', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 150 * 1024);
+    const r = packs.computeReadiness(umPacote());
+    assert(r.oversized.includes('s1'), 'nao marcou 150 KB num pacote estatico');
+    assert(itemDe(r, 'size').label.includes('100 KB'), 'rotulo: ' + itemDe(r, 'size').label);
+  });
+
+  check('figurinha animada num pacote estatico aparece como problema', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    const r = packs.computeReadiness(umPacote({ stickers: [animada()] }));
+    const item = itemDe(r, 'kind');
+    assert(item, 'nao criou o item "kind": ' + r.items.map((i) => i.id).join(','));
+    assert(item.ok === false, 'o item nao esta marcado como problema');
+    assert(item.label.includes('animada'), 'rotulo: ' + item.label);
+  });
+  check('figurinha estatica num pacote animado aparece como problema', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    const r = packs.computeReadiness(umPacote({ animated: true, stickers: [estatica()] }));
+    const item = itemDe(r, 'kind');
+    assert(item && item.ok === false, 'nao reportou a mistura');
+    assert(item.label.includes('estática'), 'rotulo: ' + item.label);
+  });
+  check('sem mistura, o item "kind" NAO existe (nao infla o denominador)', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    const r = packs.computeReadiness(umPacote());
+    assert(!itemDe(r, 'kind'), 'criou item que nunca falha');
+    assert(r.total === 3, 'pacote estatico deveria ter 3 itens, tem ' + r.total);
+  });
+
+  check('pacote animado ganha o item de duracao', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    const r = packs.computeReadiness(umPacote({ animated: true, stickers: [animada()] }));
+    const item = itemDe(r, 'duration');
+    assert(item, 'nao criou o item de duracao');
+    assert(item.ok === true, '2 s deveria estar ok');
+    assert(r.total === 4, 'pacote animado deveria ter 4 itens, tem ' + r.total);
+  });
+  check('animacao acima de 10 s e reportada', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    const r = packs.computeReadiness(umPacote({ animated: true, stickers: [animada({ durationMs: 12000 })] }));
+    assert(itemDe(r, 'duration').ok === false, 'aceitou 12 s');
+  });
+  check('pacote estatico NAO ganha item de duracao', () => {
+    filesOnDisk.clear();
+    filesOnDisk.set('/doc/s1.webp', 1000);
+    assert(!itemDe(packs.computeReadiness(umPacote()), 'duration'), 'criou item de duracao em pacote estatico');
+  });
+
+  check('limites batem com a especificacao do WhatsApp', () => {
+    assert(packs.MAX_STICKER_BYTES === 100 * 1024, 'estatico: ' + packs.MAX_STICKER_BYTES);
+    assert(packs.MAX_ANIMATED_STICKER_BYTES === 500 * 1024, 'animado: ' + packs.MAX_ANIMATED_STICKER_BYTES);
+    assert(packs.MAX_ANIMATION_MS === 10000, 'duracao: ' + packs.MAX_ANIMATION_MS);
+    assert(packs.MIN_FRAME_MS === 8, 'frame: ' + packs.MIN_FRAME_MS);
+    assert(packs.MAX_EMOJIS === 3, 'emojis: ' + packs.MAX_EMOJIS);
+    assert(packs.MIN_STICKERS === 3 && packs.MAX_STICKERS === 30, 'contagem por pacote');
+  });
+  check('isAnimatedPack trata ausencia como estatico (pacotes antigos)', () => {
+    assert(packs.isAnimatedPack({ stickers: [] }) === false, 'ausente deveria ser estatico');
+    assert(packs.isAnimatedPack({ animated: true, stickers: [] }) === true, 'true deveria ser animado');
+  });
+
   console.log('\n== ' + pass + ' ok, ' + fail + ' falhas ==');
   process.exit(fail > 0 ? 1 : 0);
 })();

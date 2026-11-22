@@ -82,6 +82,57 @@ Hoje `buildSticker` parte do arquivo: o recorte do usuário ou a imagem inteira.
 `padToSquarePng` centraliza a imagem num quadrado transparente no módulo nativo
 porque a ação `extent` do `expo-image-manipulator` **só existe na web**.
 
+### Pacote animado é uma propriedade do PACOTE, não da figurinha
+
+A especificação é literal: *"Sticker packs must contain either static or
+animated stickers, never a mix of both"*. Por isso `Pack.animated` existe como
+campo do pacote em vez de ser derivado das figurinhas — um pacote precisa saber
+o que é mesmo quando está vazio, e a folha de salvar filtra por isso antes de
+qualquer figurinha existir.
+
+Ausente significa estático, que é o que todos os pacotes gravados antes deste
+campo são. Por isso ele **não exigiu subir o `STORAGE_SCHEMA_VERSION`**.
+
+A regra atravessa várias camadas, e é por isso que ela é a parte difícil das
+animadas (bem mais que o vídeo em si):
+
+- o teto de tamanho muda com o tipo (`maxStickerBytes`), e o card de prontidão
+  mostra 100 KB ou 500 KB conforme o pacote;
+- a folha de salvar do editor desabilita pacotes animados, porque o editor
+  produz figurinha estática;
+- `computeReadiness` reporta mistura e duração acima de 10 s, com itens que só
+  aparecem quando há algo a dizer — um item que nunca falha num pacote estático
+  seria ruído e mexeria no denominador da barra de progresso;
+- `animated_sticker_pack` no `metadata.json` vem do pacote; vinha fixo em
+  `false`, e um pacote animado marcado como estático é recusado na importação.
+
+`durationMs` na figurinha é o que a marca como animada — a **presença** do campo,
+não um booleano. Valor inválido faz o campo desaparecer em vez de virar `0`: uma
+figurinha "animada com duração zero" entraria num pacote animado e faria o
+WhatsApp recusar o pacote todo.
+
+**Ainda não existe o encoder.** Não há API no Android para escrever WebP
+animado (`Bitmap.compress(WEBP)` só faz estático), então criar animada a partir
+de vídeo ou GIF depende da `WebPAnimEncoder` da libwebp — biblioteca de
+terceiros ou compilar no NDK. A extração de frames, por outro lado, já está
+coberta sem dependência nova: `MediaMetadataRetriever` para vídeo e
+`com.facebook.animated.gif.GifImage` (que o Fresco já traz via
+`expo.gif.enabled=true`) para GIF.
+
+### O emoji é opcional no app, mas não no WhatsApp
+
+O WhatsApp exige de 1 a 3 emojis por figurinha e **recusa o pacote inteiro** se a
+lista vier vazia. No app escolher é opcional: `Sticker.emojis` ausente significa
+"usar o padrão", e `resolveEmojis` no módulo nativo aplica 😀 nesse caso.
+
+Isso é deliberado: o padrão vive no nativo, nunca na UI, para que escolher emoji
+jamais se torne um passo obrigatório do fluxo de criação. Por isso a escolha fica
+na folha de cada figurinha na tela do pacote, e não na fila de edição.
+
+Entrada inválida (string vazia, tipo errado, mais de 3) é **descartada em
+silêncio** em todas as camadas, nunca motivo para recusar um pacote — emoji é
+metadado, e perder o pacote por causa dele seria desproporcional.
+
 ### Os três modos de enquadramento
 
 `StickerMode` decide como a imagem vira um quadrado de 512×512:
@@ -118,12 +169,18 @@ que não couber no limite — eram até 6 órfãos **por figurinha**.
 
 ## Limites que o WhatsApp impõe
 
+Números conferidos no [README oficial do Android](https://github.com/WhatsApp/stickers/blob/main/Android/README.md)
+do repositório `WhatsApp/stickers`, não em guias de terceiros (que divergem,
+principalmente na duração máxima da animação).
+
 | | |
 |---|---|
 | Figurinhas por pacote | 3 a 30 |
-| Figurinha | 512×512, WebP, ≤ 100 KB |
-| Ícone do pacote (tray) | 96×96, PNG, ≤ 50 KB — gerado no módulo nativo |
-| Emojis por figurinha | 1 a 3, obrigatório (hoje o app aplica 😀 em todas) |
+| Composição do pacote | **estático OU animado, nunca misturado** |
+| Figurinha estática | 512×512, WebP, ≤ 100 KB |
+| Figurinha animada | 512×512, WebP animado, ≤ 500 KB, ≤ 10 s, frames ≥ 8 ms |
+| Ícone do pacote (tray) | 96×96, PNG, ≤ 50 KB, **sempre estático** — gerado no módulo nativo |
+| Emojis por figurinha | 1 a 3, obrigatório para o WhatsApp — opcional no app |
 
 O card de prontidão na tela do pacote traduz esses requisitos; `computeReadiness`
 em [`lib/packs.ts`](lib/packs.ts) é quem os calcula.

@@ -75,6 +75,7 @@ const stubs = {
     },
   },
   '@/lib/packs': {
+    MAX_EMOJIS: 3,
     MAX_STICKERS: 30,
     newId: (kind) => 'id-' + kind + '-' + Math.random().toString(36).slice(2, 7),
     mutatePacks: async (fn) => {
@@ -200,6 +201,78 @@ check('mode desconhecido cai em "original"', () => {
   if (r.pack.stickers[0].mode !== 'original') throw new Error(r.pack.stickers[0].mode);
 });
 
+console.log('\n== EMOJIS (metadado OPCIONAL: entrada ruim e descartada, nunca recusa o pacote) ==');
+const comEmojis = (emojis) => base({ name: 'N', author: 'A', stickers: [{ webpBase64: 'A', emojis }] });
+const emojisDe = (raw) => pf.parsePackFile(raw).pack.stickers[0].emojis;
+
+check('emojis validos sao preservados na ordem', () => {
+  const r = emojisDe(comEmojis(['\u{1F600}', '\u{1F525}']));
+  if (JSON.stringify(r) !== JSON.stringify(['\u{1F600}', '\u{1F525}'])) throw new Error(JSON.stringify(r));
+});
+check('ausente: o campo nao e criado (o padrao e a AUSENCIA, nao [])', () => {
+  const sticker = pf.parsePackFile(base({ name: 'N', author: 'A', stickers: [{ webpBase64: 'A' }] })).pack.stickers[0];
+  if ('emojis' in sticker) throw new Error('criou o campo: ' + JSON.stringify(sticker.emojis));
+});
+check('acima de 3 e cortado no limite do WhatsApp', () => {
+  const r = emojisDe(comEmojis(['\u{1F600}', '\u{1F525}', '✨', '\u{1F4AF}', '\u{1F389}']));
+  if (r.length !== 3) throw new Error('ficaram ' + r.length);
+});
+check('entradas invalidas sao descartadas, as validas sobrevivem', () => {
+  const r = emojisDe(comEmojis(['\u{1F600}', '', '   ', 42, null, {}, '\u{1F525}']));
+  if (JSON.stringify(r) !== JSON.stringify(['\u{1F600}', '\u{1F525}'])) throw new Error(JSON.stringify(r));
+});
+check('espacos em volta sao removidos', () => {
+  const r = emojisDe(comEmojis(['  \u{1F600}  ']));
+  if (r[0] !== '\u{1F600}') throw new Error(JSON.stringify(r));
+});
+check('lista so com lixo cai no padrao (campo ausente)', () => {
+  const sticker = pf.parsePackFile(comEmojis(['', null, 7])).pack.stickers[0];
+  if ('emojis' in sticker) throw new Error('criou o campo: ' + JSON.stringify(sticker.emojis));
+});
+check('emojis nao sendo array e ignorado, sem recusar o pacote', () => {
+  const sticker = pf.parsePackFile(comEmojis('\u{1F600}')).pack.stickers[0];
+  if ('emojis' in sticker) throw new Error('aceitou uma string como lista');
+});
+
+console.log('\n== PACOTE ANIMADO ==');
+check('a marca de animado sobrevive ao parse', () => {
+  const raw = JSON.stringify({
+    format: 'jambo-pack',
+    schemaVersion: 1,
+    pack: { name: 'N', author: 'A', animated: true, stickers: [{ webpBase64: 'A', durationMs: 2500, frameCount: 25 }] },
+  });
+  const r = pf.parsePackFile(raw);
+  if (r.pack.animated !== true) throw new Error('perdeu a marca de animado');
+  if (r.pack.stickers[0].durationMs !== 2500) throw new Error('perdeu durationMs');
+  if (r.pack.stickers[0].frameCount !== 25) throw new Error('perdeu frameCount');
+});
+check('pacote sem a marca nao ganha o campo (ausente = estatico)', () => {
+  const r = pf.parsePackFile(base({ name: 'N', author: 'A', stickers: [{ webpBase64: 'A' }] }));
+  if ('animated' in r.pack) throw new Error('criou o campo: ' + r.pack.animated);
+});
+check('animated: "true" (string) nao e aceito como animado', () => {
+  const raw = JSON.stringify({
+    format: 'jambo-pack',
+    schemaVersion: 1,
+    pack: { name: 'N', author: 'A', animated: 'true', stickers: [{ webpBase64: 'A' }] },
+  });
+  if ('animated' in pf.parsePackFile(raw).pack) throw new Error('aceitou uma string');
+});
+check('CRITICO: durationMs invalido SOME em vez de virar 0', () => {
+  // Uma figurinha "animada de duracao zero" seria pior que uma estatica: ela
+  // entraria num pacote animado e o WhatsApp recusaria o pacote todo.
+  for (const ruim of [0, -5, 'x', null, NaN]) {
+    const sticker = pf.parsePackFile(base({ name: 'N', author: 'A', stickers: [{ webpBase64: 'A', durationMs: ruim }] }))
+      .pack.stickers[0];
+    if ('durationMs' in sticker) throw new Error('aceitou durationMs=' + JSON.stringify(ruim));
+  }
+});
+check('frameCount sem durationMs e ignorado (duracao e quem marca animado)', () => {
+  const sticker = pf.parsePackFile(base({ name: 'N', author: 'A', stickers: [{ webpBase64: 'A', frameCount: 10 }] }))
+    .pack.stickers[0];
+  if ('frameCount' in sticker || 'durationMs' in sticker) throw new Error('criou metadado de animacao');
+});
+
 (async () => {
   console.log('\n== ROUND-TRIP: exportar -> importar ==');
   const pack = {
@@ -208,7 +281,7 @@ check('mode desconhecido cai em "original"', () => {
     author: 'Nikolas',
     iconUri: '/doc/stickers/s1.webp',
     stickers: [
-      { id: 's1', processedUri: '/doc/stickers/s1.webp', mode: 'crop', format: 'webp', width: 512, height: 512 },
+      { id: 's1', processedUri: '/doc/stickers/s1.webp', mode: 'crop', format: 'webp', width: 512, height: 512, emojis: ['\u{1F600}', '\u{1F525}'] },
       { id: 's2', processedUri: '/doc/stickers/s2.webp', mode: 'original', format: 'webp', width: 512, height: 512 },
     ],
   };
@@ -230,6 +303,10 @@ check('mode desconhecido cai em "original"', () => {
       throw new Error('modo nao preservado');
     }
     if (back.pack.name !== 'Memes do Grupo' || back.pack.author !== 'Nikolas') throw new Error('metadado perdido');
+    if (JSON.stringify(back.pack.stickers[0].emojis) !== JSON.stringify(['\u{1F600}', '\u{1F525}'])) {
+      throw new Error('emojis perdidos: ' + JSON.stringify(back.pack.stickers[0].emojis));
+    }
+    if ('emojis' in back.pack.stickers[1]) throw new Error('inventou emojis na figurinha sem eles');
   });
 
   const file = await pf.writePackFile(pack);
@@ -275,12 +352,52 @@ check('mode desconhecido cai em "original"', () => {
   check('import define o icone do pacote', () => {
     if (importado.iconUri !== importado.stickers[0].processedUri) throw new Error('icone errado');
   });
+  check('import preserva os emojis escolhidos', () => {
+    if (JSON.stringify(importado.stickers[0].emojis) !== JSON.stringify(['\u{1F600}', '\u{1F525}'])) {
+      throw new Error('emojis: ' + JSON.stringify(importado.stickers[0].emojis));
+    }
+    if ('emojis' in importado.stickers[1]) throw new Error('inventou emojis na segunda figurinha');
+  });
 
   stubs['expo-document-picker'].getDocumentAsync = async () => ({ canceled: true, assets: null });
   const cancelado = await pf.importPackFromFile();
   check('cancelar o seletor devolve null', () => {
     if (cancelado !== null) throw new Error('devolveu ' + JSON.stringify(cancelado));
     if (savedPacks.length !== 2) throw new Error('criou pacote mesmo cancelado');
+  });
+
+  console.log('\n== ROUND-TRIP DE PACOTE ANIMADO (caminho completo) ==');
+  written.set('/doc/stickers/a1.webp', 'UklGRgAAanim');
+  const packAnimado = {
+    id: 'anim-local',
+    name: 'Reacoes',
+    author: 'Nikolas',
+    iconUri: '/doc/stickers/a1.webp',
+    animated: true,
+    stickers: [
+      { id: 'a1', processedUri: '/doc/stickers/a1.webp', mode: 'original', format: 'webp', width: 512, height: 512, durationMs: 3200, frameCount: 32 },
+    ],
+  };
+  const arquivoAnimado = await pf.writePackFile(packAnimado);
+  const rawAnimado = JSON.stringify(await pf.buildPackFile(packAnimado));
+  written.set(arquivoAnimado.uri, rawAnimado);
+  stubs['expo-document-picker'].getDocumentAsync = async () => ({
+    canceled: false,
+    assets: [{ uri: arquivoAnimado.uri, name: 'reacoes.jambo.json', size: rawAnimado.length }],
+  });
+  savedPacks = [];
+  const animadoImportado = await pf.importPackFromFile();
+
+  check('o pacote importado continua marcado como animado', () => {
+    if (animadoImportado.animated !== true) throw new Error('perdeu a marca: ' + animadoImportado.animated);
+  });
+  check('a duracao e o numero de frames sobrevivem', () => {
+    const s = animadoImportado.stickers[0];
+    if (s.durationMs !== 3200) throw new Error('durationMs: ' + s.durationMs);
+    if (s.frameCount !== 32) throw new Error('frameCount: ' + s.frameCount);
+  });
+  check('pacote estatico importado NAO ganha a marca de animado', () => {
+    if ('animated' in importado) throw new Error('o estatico ganhou animated=' + importado.animated);
   });
 
   console.log('\n== EXPORT COM ARQUIVO FALTANDO NO DISCO ==');

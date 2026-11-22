@@ -24,7 +24,24 @@ export type Sticker = {
   format: 'webp';
   width: number;
   height: number;
+  /**
+   * Emojis que o WhatsApp usa na busca de figurinhas. OPCIONAL: ausente ou
+   * vazio significa "usar o padrao", que o modulo nativo aplica. O WhatsApp
+   * exige de 1 a 3 e recusa o pacote com a lista vazia, entao escolher nunca
+   * pode ser um passo obrigatorio do fluxo de criacao.
+   */
+  emojis?: string[];
+  /**
+   * Duracao total da animacao em ms. A PRESENCA deste campo e o que define que
+   * a figurinha e animada — ausente significa estatica.
+   */
+  durationMs?: number;
+  /** Numero de frames, informativo. */
+  frameCount?: number;
 };
+
+/** Teto do WhatsApp por figurinha. */
+export const MAX_EMOJIS = 3;
 
 export type Pack = {
   id: string;
@@ -32,9 +49,30 @@ export type Pack = {
   author: string;
   iconUri: string;
   stickers: Sticker[];
+  /**
+   * Pacote de figurinhas animadas.
+   *
+   * O WhatsApp e explicito: "Sticker packs must contain either static or
+   * animated stickers, never a mix of both". Por isso isto e propriedade do
+   * PACOTE e nao derivada das figurinhas — um pacote precisa saber o que e
+   * mesmo quando esta vazio, e a folha de salvar precisa filtrar por isso
+   * antes de qualquer figurinha existir.
+   *
+   * Ausente significa estatico: e o que todos os pacotes gravados antes deste
+   * campo sao, entao nao exige subir o STORAGE_SCHEMA_VERSION.
+   */
+  animated?: boolean;
   /** Timestamp da ultima importacao confirmada pelo WhatsApp. */
   exportedAt?: number;
 };
+
+export function isAnimatedPack(pack: Pack): boolean {
+  return pack.animated === true;
+}
+
+export function isAnimatedSticker(sticker: Sticker): boolean {
+  return typeof sticker.durationMs === 'number';
+}
 
 // Mantido do esquema antigo de propósito: renomear a chave apagaria os pacotes ja salvos.
 const PACKS_STORAGE_KEY = '@app-de-figurinhas/albums';
@@ -63,7 +101,24 @@ export function storageErrorMessage(error: unknown): string {
   return 'Não foi possível ler seus pacotes neste momento.';
 }
 
+/**
+ * Limites de tamanho por figurinha, direto da especificacao do WhatsApp:
+ * "each static sticker must be less than or equal to 100KB and each animated
+ * sticker must be less than or equal to 500KB".
+ */
 export const MAX_STICKER_BYTES = 100 * 1024;
+export const MAX_ANIMATED_STICKER_BYTES = 500 * 1024;
+
+/**
+ * "Animation duration should be less than or equal to 10 seconds total" e
+ * "frames with minimum duration of 8ms".
+ */
+export const MAX_ANIMATION_MS = 10_000;
+export const MIN_FRAME_MS = 8;
+
+export function maxStickerBytes(animated: boolean): number {
+  return animated ? MAX_ANIMATED_STICKER_BYTES : MAX_STICKER_BYTES;
+}
 export const MIN_STICKERS = 3;
 export const MAX_STICKERS = 30;
 
@@ -161,8 +216,18 @@ export function computeReadiness(pack: Pack): Readiness {
   const sizes: Record<string, number> = {};
   const oversized: string[] = [];
   const missingFiles: string[] = [];
+  const mismatched: string[] = [];
+  const tooLong: string[] = [];
+
+  const animated = isAnimatedPack(pack);
+  const byteLimit = maxStickerBytes(animated);
 
   for (const sticker of pack.stickers) {
+    // O WhatsApp proibe misturar estatico e animado num pacote. Isto nao deve
+    // acontecer pela UI, mas um arquivo importado pode trazer inconsistencia.
+    if (isAnimatedSticker(sticker) !== animated) mismatched.push(sticker.id);
+    if ((sticker.durationMs ?? 0) > MAX_ANIMATION_MS) tooLong.push(sticker.id);
+
     try {
       const file = new File(sticker.processedUri);
       if (!file.exists) {
@@ -170,7 +235,7 @@ export function computeReadiness(pack: Pack): Readiness {
         continue;
       }
       sizes[sticker.id] = file.size;
-      if (file.size > MAX_STICKER_BYTES) oversized.push(sticker.id);
+      if (file.size > byteLimit) oversized.push(sticker.id);
     } catch {
       missingFiles.push(sticker.id);
     }
@@ -178,6 +243,7 @@ export function computeReadiness(pack: Pack): Readiness {
 
   const count = pack.stickers.length;
   const missingCount = Math.max(0, MIN_STICKERS - count);
+  const limitLabel = `${Math.round(byteLimit / 1024)} KB`;
 
   const items: ReadinessItem[] = [
     {
@@ -209,12 +275,35 @@ export function computeReadiness(pack: Pack): Readiness {
       ok: oversized.length === 0,
       label:
         oversized.length > 0
-          ? `${oversized.length} ${plural(oversized.length, 'figurinha', 'figurinhas')} acima de 100 KB`
-          : 'Todas abaixo de 100 KB',
+          ? `${oversized.length} ${plural(oversized.length, 'figurinha', 'figurinhas')} acima de ${limitLabel}`
+          : `Todas abaixo de ${limitLabel}`,
       actionLabel: oversized.length > 0 ? 'Comprimir' : undefined,
       action: oversized.length > 0 ? 'compress' : undefined,
     },
   ];
+
+  // Itens condicionais: entram so quando ha algo a dizer. Um item que nunca
+  // falha num pacote estatico seria ruido — e mexeria no denominador da barra.
+  if (mismatched.length > 0) {
+    items.push({
+      id: 'kind',
+      ok: false,
+      label: animated
+        ? `${mismatched.length} ${plural(mismatched.length, 'figurinha estática', 'figurinhas estáticas')} num pacote animado`
+        : `${mismatched.length} ${plural(mismatched.length, 'figurinha animada', 'figurinhas animadas')} num pacote estático`,
+    });
+  }
+
+  if (animated) {
+    items.push({
+      id: 'duration',
+      ok: tooLong.length === 0,
+      label:
+        tooLong.length > 0
+          ? `${tooLong.length} ${plural(tooLong.length, 'animação passa', 'animações passam')} de ${MAX_ANIMATION_MS / 1000} s`
+          : `Animações até ${MAX_ANIMATION_MS / 1000} s`,
+    });
+  }
 
   const satisfied = items.filter((item) => item.ok).length;
   const ready = satisfied === items.length;

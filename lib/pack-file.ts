@@ -2,7 +2,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
-import { MAX_STICKERS, newId, mutatePacks, type Pack, type Sticker, type StickerMode } from '@/lib/packs';
+import {
+  MAX_EMOJIS,
+  MAX_STICKERS,
+  newId,
+  mutatePacks,
+  type Pack,
+  type Sticker,
+  type StickerMode,
+} from '@/lib/packs';
 import { deleteStickerFile, persistStickerFromBase64 } from '@/lib/stickers';
 
 /**
@@ -47,6 +55,11 @@ type PackFileSticker = {
   width: number;
   height: number;
   webpBase64: string;
+  /** Omitido quando o usuario nao escolheu — o padrao e aplicado no nativo. */
+  emojis?: string[];
+  /** Presente apenas em figurinha animada. */
+  durationMs?: number;
+  frameCount?: number;
 };
 
 export type PackFile = {
@@ -56,6 +69,8 @@ export type PackFile = {
   pack: {
     name: string;
     author: string;
+    /** Pacote animado. Ausente significa estatico. */
+    animated?: boolean;
     stickers: PackFileSticker[];
   };
 };
@@ -104,6 +119,9 @@ export async function buildPackFile(pack: Pack): Promise<PackFile> {
       width: sticker.width,
       height: sticker.height,
       webpBase64: await readStickerBase64(sticker),
+      ...(sticker.emojis?.length ? { emojis: sticker.emojis } : {}),
+      ...(typeof sticker.durationMs === 'number' ? { durationMs: sticker.durationMs } : {}),
+      ...(typeof sticker.frameCount === 'number' ? { frameCount: sticker.frameCount } : {}),
     });
   }
 
@@ -111,7 +129,12 @@ export async function buildPackFile(pack: Pack): Promise<PackFile> {
     format: PACK_FILE_FORMAT,
     schemaVersion: PACK_FILE_SCHEMA_VERSION,
     exportedAt: Date.now(),
-    pack: { name: pack.name, author: pack.author, stickers },
+    pack: {
+      name: pack.name,
+      author: pack.author,
+      ...(pack.animated ? { animated: true } : {}),
+      stickers,
+    },
   };
 }
 
@@ -168,7 +191,36 @@ function parseSticker(value: unknown, index: number): PackFileSticker {
     height: typeof height === 'number' && height > 0 ? height : 512,
     mode: STICKER_MODES.includes(mode as StickerMode) ? (mode as StickerMode) : 'original',
     webpBase64,
+    ...parseEmojis(sticker.emojis),
+    ...parseAnimation(sticker),
   };
+}
+
+/**
+ * Metadado de animacao. A presenca de `durationMs` e o que marca a figurinha
+ * como animada, entao um valor invalido some em vez de virar 0 — uma figurinha
+ * "animada com duracao zero" seria pior que uma estatica.
+ */
+function parseAnimation(sticker: Record<string, unknown>): { durationMs?: number; frameCount?: number } {
+  const { durationMs, frameCount } = sticker;
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0) return {};
+  return {
+    durationMs,
+    ...(typeof frameCount === 'number' && frameCount > 0 ? { frameCount } : {}),
+  };
+}
+
+/**
+ * Emoji e metadado opcional: entrada invalida e DESCARTADA, nunca motivo para
+ * recusar o pacote. Sem emojis validos, o modulo nativo aplica o padrao.
+ */
+function parseEmojis(value: unknown): { emojis?: string[] } {
+  if (!Array.isArray(value)) return {};
+  const emojis = value
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    .map((entry) => entry.trim())
+    .slice(0, MAX_EMOJIS);
+  return emojis.length > 0 ? { emojis } : {};
 }
 
 export function parsePackFile(raw: string): PackFile {
@@ -207,7 +259,12 @@ export function parsePackFile(raw: string): PackFile {
     format: PACK_FILE_FORMAT,
     schemaVersion,
     exportedAt: typeof root.exportedAt === 'number' ? root.exportedAt : Date.now(),
-    pack: { name, author, stickers: pack.stickers.map(parseSticker) },
+    pack: {
+      name,
+      author,
+      ...(pack.animated === true ? { animated: true } : {}),
+      stickers: pack.stickers.map(parseSticker),
+    },
   };
 }
 
@@ -229,6 +286,9 @@ async function savePackFile(payload: PackFile): Promise<Pack> {
         format: 'webp',
         width: entry.width,
         height: entry.height,
+        ...(entry.emojis?.length ? { emojis: entry.emojis } : {}),
+        ...(typeof entry.durationMs === 'number' ? { durationMs: entry.durationMs } : {}),
+        ...(typeof entry.frameCount === 'number' ? { frameCount: entry.frameCount } : {}),
       };
     });
 
@@ -237,6 +297,7 @@ async function savePackFile(payload: PackFile): Promise<Pack> {
       name: payload.pack.name,
       author: payload.pack.author,
       iconUri: stickers[0].processedUri,
+      ...(payload.pack.animated ? { animated: true } : {}),
       stickers,
     };
 

@@ -20,6 +20,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.ReadableType;
 import com.facebook.react.bridge.WritableMap;
 
 import org.json.JSONArray;
@@ -39,6 +40,7 @@ public class WhatsAppStickerModule extends ReactContextBaseJavaModule implements
   private static final String TAG = "WhatsAppStickerModule";
   private static final int TRAY_IMAGE_SIZE = 96;
   private static final int ADD_PACK_REQUEST = 200;
+  private static final int MAX_EMOJIS = 3;
   // U+1F600 GRINNING FACE construido em ASCII puro para nao depender do encoding do source.
   private static final String DEFAULT_EMOJI = new String(Character.toChars(0x1F600));
 
@@ -102,11 +104,7 @@ public class WhatsAppStickerModule extends ReactContextBaseJavaModule implements
           String sourceUri = sticker.getString("url");
           String fileName = "sticker_" + index + ".webp";
           copyUriToFile(sourceUri, new File(packDirectory, fileName));
-          // O WhatsApp rejeita entradas de emoji vazias; cada figurinha precisa de 1 a 3 emojis validos.
-          String emoji = sticker.hasKey("emoji") ? sticker.getString("emoji") : null;
-          if (emoji == null || emoji.trim().isEmpty()) emoji = DEFAULT_EMOJI;
-          JSONArray emojis = new JSONArray().put(emoji);
-          stickers.put(new JSONObject().put("image_file", fileName).put("emojis", emojis));
+          stickers.put(new JSONObject().put("image_file", fileName).put("emojis", resolveEmojis(sticker)));
         }
         Log.d(TAG, "Copied " + stickerArray.size() + " stickers to " + packDirectory.getAbsolutePath());
 
@@ -123,7 +121,9 @@ public class WhatsAppStickerModule extends ReactContextBaseJavaModule implements
           .put("license_agreement_website", config.getString("licenseURL"))
           .put("image_data_version", imageDataVersion)
           .put("whatsapp_will_not_cache_stickers", false)
-          .put("animated_sticker_pack", false)
+          // Vinha fixo em false. O WhatsApp exige este campo em pacote animado,
+          // e um pacote animado marcado como estatico e recusado na importacao.
+          .put("animated_sticker_pack", config.hasKey("animated") && config.getBoolean("animated"))
           .put("stickers", stickers);
         writeText(new File(packDirectory, "metadata.json"), metadata.toString());
         Log.d(TAG, "Metadata ready for " + identifier + " (image_data_version=" + imageDataVersion + ")");
@@ -234,6 +234,28 @@ public class WhatsAppStickerModule extends ReactContextBaseJavaModule implements
         if (source != null) source.recycle();
       }
     }).start();
+  }
+
+  /**
+   * Resolve os emojis de uma figurinha.
+   *
+   * O WhatsApp exige de 1 a 3 emojis por figurinha e recusa o pacote inteiro se
+   * a lista vier vazia. No app a escolha e OPCIONAL, entao o padrao e aplicado
+   * aqui — nunca na UI — e entradas vazias ou acima do limite sao descartadas
+   * em silencio em vez de derrubar a exportacao.
+   */
+  private static JSONArray resolveEmojis(ReadableMap sticker) {
+    JSONArray emojis = new JSONArray();
+    ReadableArray provided = sticker.hasKey("emojis") ? sticker.getArray("emojis") : null;
+    if (provided != null) {
+      for (int index = 0; index < provided.size() && emojis.length() < MAX_EMOJIS; index++) {
+        if (provided.getType(index) != ReadableType.String) continue;
+        String emoji = provided.getString(index);
+        if (emoji != null && !emoji.trim().isEmpty()) emojis.put(emoji.trim());
+      }
+    }
+    if (emojis.length() == 0) emojis.put(DEFAULT_EMOJI);
+    return emojis;
   }
 
   private void rejectPending(String code, @Nullable String message) {

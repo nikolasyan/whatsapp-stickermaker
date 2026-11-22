@@ -12,6 +12,7 @@ import { JamboFonts, JamboRadius, type JamboPalette } from '@/constants/jambo-th
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
 import {
   MAX_STICKERS,
+  isAnimatedPack,
   loadPacks,
   mutatePacks,
   newId,
@@ -512,7 +513,11 @@ function SaveSheet({
             // O lote inteiro precisa caber: aceitar um pacote com 2 vagas para
             // 12 figurinhas estouraria o limite de 30 do WhatsApp.
             const free = MAX_STICKERS - pack.stickers.length;
-            const fits = free >= needed;
+            // O editor produz figurinha ESTATICA, e o WhatsApp proibe misturar:
+            // "packs must contain either static or animated stickers, never a
+            // mix of both". Pacote animado nao pode receber estas figurinhas.
+            const sameKind = !isAnimatedPack(pack);
+            const fits = free >= needed && sameKind;
             return (
               <Pressable
                 key={pack.id}
@@ -550,9 +555,11 @@ function SaveSheet({
                     }}>
                     {fits
                       ? `${pack.stickers.length}/${MAX_STICKERS} figurinhas`
-                      : free === 0
-                        ? `${MAX_STICKERS}/${MAX_STICKERS} · cheio`
-                        : `só cabem ${free} · precisa de ${needed}`}
+                      : !sameKind
+                        ? 'pacote animado · não aceita estáticas'
+                        : free === 0
+                          ? `${MAX_STICKERS}/${MAX_STICKERS} · cheio`
+                          : `só cabem ${free} · precisa de ${needed}`}
                   </Text>
                 </View>
                 {fits ? <JamboIcon name="chevronRight" size={18} color={palette.textMuted} /> : null}
