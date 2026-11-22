@@ -14,6 +14,7 @@ public class WhatsAppStickerPackage implements ReactPackage {
   public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
     List<NativeModule> modules = new ArrayList<>();
     modules.add(new WhatsAppStickerModule(reactContext));
+    modules.add(new AnimatedStickerModule(reactContext));
     return modules;
   }
 

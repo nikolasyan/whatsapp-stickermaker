@@ -9,10 +9,21 @@ import { FloatingMark } from '@/components/jambo/floating-mark';
 import { JamboIcon } from '@/components/jambo/icons';
 import { JamboMark } from '@/components/jambo/jambo-mark';
 import { IconButton, SpecChip } from '@/components/jambo/ui';
-import { JamboFonts, JamboRadius } from '@/constants/jambo-theme';
+import { JamboFonts, JamboRadius, type JamboPalette } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
 import { MAX_STICKERS } from '@/lib/packs';
 import { setQueue, type QueuedImage } from '@/lib/sticker-queue';
+
+/**
+ * Reconhece GIF por tipo MIME, com o nome do arquivo e a extensao do URI como
+ * reserva: `mimeType` e opcional no retorno do picker e alguns fabricantes nao
+ * o preenchem.
+ */
+function isGif(asset: { mimeType?: string; fileName?: string | null; uri: string }): boolean {
+  if (asset.mimeType) return asset.mimeType === 'image/gif';
+  const name = (asset.fileName ?? asset.uri).toLowerCase();
+  return name.endsWith('.gif');
+}
 
 export default function CreateScreen() {
   const router = useRouter();
@@ -20,6 +31,7 @@ export default function CreateScreen() {
   // O preview e quadrado, mas titulo e subtitulo quebram em telas estreitas.
   // Medir o espaco livre evita que ele empurre o rodape para fora da tela.
   const [previewSize, setPreviewSize] = useState(0);
+  const [animated, setAnimated] = useState(false);
 
   function measurePreview(event: LayoutChangeEvent) {
     const { width, height } = event.nativeEvent.layout;
@@ -34,9 +46,9 @@ export default function CreateScreen() {
    * Com 12 fotos escolhidas, converter todas na entrada seriam 12 conversoes
    * de vários MB — a maioria jogada fora sem ninguem usar.
    */
-  function openEditor(images: QueuedImage[]) {
+  function openEditor(images: QueuedImage[], animated: boolean) {
     if (images.length === 0) return;
-    setQueue(images);
+    setQueue(images, animated);
     router.push('/editor');
   }
 
@@ -52,11 +64,46 @@ export default function CreateScreen() {
       allowsMultipleSelection: true,
       // Teto do pacote: escolher mais que isso nao teria onde caber.
       selectionLimit: MAX_STICKERS,
+      // `quality: 1` nao e so "qualidade maxima": no Android ele faz o
+      // expo-image-picker usar o RawImageExporter, que COPIA os bytes em vez de
+      // reencodar. E isso que preserva a animacao de um GIF — com qualquer
+      // outro valor o picker achataria num frame so antes do nosso encoder ver
+      // o arquivo. Nao baixe este valor.
       quality: 1,
     });
     if (result.canceled) return;
+
+    const images = result.assets.map((asset) => ({
+      sourceUri: asset.uri,
+      width: asset.width,
+      height: asset.height,
+    }));
+
+    if (!animated) {
+      openEditor(images, false);
+      return;
+    }
+
+    // O seletor do sistema nao filtra por GIF de forma confiavel entre
+    // fabricantes, entao a checagem e nossa: sem ela um JPEG entraria no
+    // caminho animado e o decodificador de GIF falharia com erro obscuro.
+    const gifs = result.assets.filter((asset) => isGif(asset));
+    if (gifs.length === 0) {
+      Alert.alert(
+        'Nenhum GIF selecionado',
+        'Figurinha animada precisa de um GIF. Para imagem comum, troque para "Imagem" acima.',
+      );
+      return;
+    }
+    if (gifs.length < result.assets.length) {
+      Alert.alert(
+        'Algumas não são GIF',
+        `${result.assets.length - gifs.length} das imagens escolhidas não são GIF e ficaram de fora.`,
+      );
+    }
     openEditor(
-      result.assets.map((asset) => ({ sourceUri: asset.uri, width: asset.width, height: asset.height })),
+      gifs.map((asset) => ({ sourceUri: asset.uri, width: asset.width, height: asset.height })),
+      true,
     );
   }
 
@@ -68,7 +115,8 @@ export default function CreateScreen() {
     }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
     const asset = result.canceled ? null : result.assets[0];
-    if (asset?.uri) openEditor([{ sourceUri: asset.uri, width: asset.width, height: asset.height }]);
+    // A camera sempre produz imagem estatica, independente do modo escolhido.
+    if (asset?.uri) openEditor([{ sourceUri: asset.uri, width: asset.width, height: asset.height }], false);
   }
 
   return (
@@ -93,10 +141,19 @@ export default function CreateScreen() {
       </View>
 
       <View style={styles.titleBlock}>
-        <Text style={[styles.title, { color: palette.text }]}>Preview da sua imagem</Text>
-        <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
-          Escolha uma ou várias fotos, ou tire uma na hora. Recorte depois.
+        <Text style={[styles.title, { color: palette.text }]}>
+          {animated ? 'Figurinha animada' : 'Preview da sua imagem'}
         </Text>
+        <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
+          {animated
+            ? 'Escolha um GIF da galeria. Ele vira uma animação de até 10 segundos.'
+            : 'Escolha uma ou várias fotos, ou tire uma na hora. Recorte depois.'}
+        </Text>
+      </View>
+
+      <View style={[styles.switcher, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+        <KindTab label="Imagem" active={!animated} palette={palette} onPress={() => setAnimated(false)} />
+        <KindTab label="Animada" active={animated} palette={palette} onPress={() => setAnimated(true)} />
       </View>
 
       <View style={styles.previewWrap} onLayout={measurePreview}>
@@ -119,23 +176,72 @@ export default function CreateScreen() {
           onPress={pickFromLibrary}
           accessibilityRole="button"
           style={({ pressed }) => [styles.galleryButton, { backgroundColor: palette.accent }, pressed && styles.pressed]}>
-          <JamboIcon name="camera" size={19} color={palette.onAccent} />
-          <Text style={[styles.galleryLabel, { color: palette.onAccent }]}>Galeria</Text>
+          <JamboIcon name={animated ? 'frame' : 'camera'} size={19} color={palette.onAccent} />
+          <Text style={[styles.galleryLabel, { color: palette.onAccent }]}>
+            {animated ? 'Escolher GIF' : 'Galeria'}
+          </Text>
         </Pressable>
-        <IconButton name="cameraAlt" size={56} palette={palette} accessibilityLabel="Tirar foto" onPress={takePhoto} />
+        {/* Sem camera no modo animado: nao se tira um GIF. */}
+        {animated ? null : (
+          <IconButton name="cameraAlt" size={56} palette={palette} accessibilityLabel="Tirar foto" onPress={takePhoto} />
+        )}
       </View>
 
       <View style={styles.specWrap}>
         <SpecChip palette={palette} mono="512×512">
-          · WebP · máx. 100 KB — o app resolve isso pra você
+          {animated
+            ? ' · WebP animado · máx. 500 KB · até 10 s'
+            : ' · WebP · máx. 100 KB — o app resolve isso pra você'}
         </SpecChip>
       </View>
     </SafeAreaView>
   );
 }
 
+function KindTab({
+  label,
+  active,
+  palette,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  palette: JamboPalette;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      style={({ pressed }) => [
+        styles.kindTab,
+        active && { backgroundColor: palette.accentMuted },
+        pressed && styles.pressed,
+      ]}>
+      <Text
+        style={{
+          color: active ? palette.accentSoft : palette.textMuted,
+          fontFamily: active ? JamboFonts.bodyBold : JamboFonts.bodySemi,
+          fontSize: 14,
+        }}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { flex: 1 },
+  switcher: {
+    flexDirection: 'row',
+    marginHorizontal: 24,
+    padding: 4,
+    gap: 4,
+    borderRadius: JamboRadius.md,
+    borderWidth: 1,
+  },
+  kindTab: { flex: 1, minHeight: 38, alignItems: 'center', justifyContent: 'center', borderRadius: JamboRadius.sm },
   watermark: { position: 'absolute', top: -60, right: -70, opacity: 0.35 },
   header: {
     flexDirection: 'row',

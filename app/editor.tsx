@@ -22,7 +22,7 @@ import {
   type StickerMode,
 } from '@/lib/packs';
 import { getQueue } from '@/lib/sticker-queue';
-import { buildSticker, stageSourceImage } from '@/lib/stickers';
+import { buildAnimatedSticker, buildSticker, stageSourceImage } from '@/lib/stickers';
 
 /** Decisao de enquadramento de UMA imagem do lote. */
 type Decision = { mode: StickerMode; croppedUri: string | null };
@@ -35,9 +35,12 @@ export default function EditorScreen() {
 
   // Copia a fila para estado local na montagem; dali em diante o editor e o
   // dono dela. Um reload do app zera o modulo e cai no aviso mais abaixo.
-  const [images, setImages] = useState(getQueue);
+  const [initial] = useState(getQueue);
+  /** Fila homogenea: o tipo vem da escolha feita na tela Criar. */
+  const animated = initial.animated;
+  const [images, setImages] = useState(initial.images);
   const [index, setIndex] = useState(0);
-  const [decisions, setDecisions] = useState<Decision[]>(() => images.map(() => DEFAULT_DECISION));
+  const [decisions, setDecisions] = useState<Decision[]>(() => initial.images.map(() => DEFAULT_DECISION));
   const [staging, setStaging] = useState(false);
   const [saveSheetVisible, setSaveSheetVisible] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
@@ -152,19 +155,32 @@ export default function EditorScreen() {
         const item = decisions[position] ?? DEFAULT_DECISION;
         try {
           // O recorte escolhido, ou a imagem de origem nos modos original/stretch.
-          const built = await buildSticker(
-            item.croppedUri ?? images[position].sourceUri,
-            stickerId,
-            item.mode,
-          );
-          stickers.push({
-            id: stickerId,
-            processedUri: built.uri,
-            mode: item.mode,
-            format: 'webp',
-            width: built.width,
-            height: built.height,
-          });
+          const source = item.croppedUri ?? images[position].sourceUri;
+          // Caminhos genuinamente diferentes: a animada decodifica o GIF, compoe
+          // os frames e codifica WebP animado, tudo no nativo.
+          if (animated) {
+            const built = await buildAnimatedSticker(source, stickerId, item.mode);
+            stickers.push({
+              id: stickerId,
+              processedUri: built.uri,
+              mode: item.mode,
+              format: 'webp',
+              width: built.width,
+              height: built.height,
+              durationMs: built.durationMs,
+              frameCount: built.frameCount,
+            });
+          } else {
+            const built = await buildSticker(source, stickerId, item.mode);
+            stickers.push({
+              id: stickerId,
+              processedUri: built.uri,
+              mode: item.mode,
+              format: 'webp',
+              width: built.width,
+              height: built.height,
+            });
+          }
         } catch (error) {
           console.warn('[editor] falhou ao gerar a figurinha', position, error);
           failed += 1;
@@ -235,6 +251,9 @@ export default function EditorScreen() {
         author,
         // O URI persistido da figurinha sobrevive a limpeza de cache; o do preview nao.
         iconUri: stickers[0].processedUri,
+        // O pacote nasce com o tipo da fila: o WhatsApp nao aceita misturar, e
+        // depois de criado nao ha como converter.
+        ...(animated ? { animated: true } : {}),
         stickers,
       };
       await mutatePacks((currentPacks) => [...currentPacks, pack]);
@@ -267,7 +286,11 @@ export default function EditorScreen() {
       <View style={styles.header}>
         <IconButton name="back" palette={palette} accessibilityLabel="Voltar" onPress={() => router.back()} />
         <Text style={[styles.headerTitle, { color: palette.textSecondary }]}>
-          {total > 1 ? `Figurinha ${index + 1} de ${total}` : 'Editar figurinha'}
+          {total > 1
+            ? `${animated ? 'Animada' : 'Figurinha'} ${index + 1} de ${total}`
+            : animated
+              ? 'Editar animada'
+              : 'Editar figurinha'}
         </Text>
         <Pressable
           onPress={openSaveSheet}
@@ -303,14 +326,18 @@ export default function EditorScreen() {
       </View>
 
       <View style={styles.tools}>
-        <ToolTab
-          palette={palette}
-          icon="crop"
-          label={staging ? 'Abrindo...' : 'Recortar'}
-          active={mode === 'crop'}
-          busy={staging}
-          onPress={openCropper}
-        />
+        {/* Sem recorte na animada: o uCrop abre uma imagem estatica e
+            devolveria um frame so, destruindo a animacao. */}
+        {animated ? null : (
+          <ToolTab
+            palette={palette}
+            icon="crop"
+            label={staging ? 'Abrindo...' : 'Recortar'}
+            active={mode === 'crop'}
+            busy={staging}
+            onPress={openCropper}
+          />
+        )}
         <ToolTab
           palette={palette}
           icon="square"
@@ -347,7 +374,9 @@ export default function EditorScreen() {
             }}>
             {mode === 'stretch'
               ? 'a imagem será esticada para preencher o quadrado'
-              : 'webp · comprimido até caber em 100 KB'}
+              : animated
+                ? 'webp animado · até 10 s, comprimido até caber em 500 KB'
+                : 'webp · comprimido até caber em 100 KB'}
           </Text>
         </View>
         <View style={styles.footerButtons}>
@@ -393,6 +422,7 @@ export default function EditorScreen() {
         packs={packs}
         busy={busy}
         needed={total}
+        needsAnimated={animated}
         progress={progress}
         onClose={() => setSaveSheetVisible(false)}
         onPick={addToPack}
@@ -471,6 +501,7 @@ function SaveSheet({
   packs,
   busy,
   needed,
+  needsAnimated,
   progress,
   onClose,
   onPick,
@@ -482,6 +513,8 @@ function SaveSheet({
   busy: boolean;
   /** Quantas figurinhas o lote vai adicionar — define se o pacote tem espaco. */
   needed: number;
+  /** Tipo do lote: so pacotes do mesmo tipo podem receber. */
+  needsAnimated: boolean;
   progress: { done: number; total: number } | null;
   onClose: () => void;
   onPick: (pack: Pack) => void;
@@ -513,10 +546,9 @@ function SaveSheet({
             // O lote inteiro precisa caber: aceitar um pacote com 2 vagas para
             // 12 figurinhas estouraria o limite de 30 do WhatsApp.
             const free = MAX_STICKERS - pack.stickers.length;
-            // O editor produz figurinha ESTATICA, e o WhatsApp proibe misturar:
-            // "packs must contain either static or animated stickers, never a
-            // mix of both". Pacote animado nao pode receber estas figurinhas.
-            const sameKind = !isAnimatedPack(pack);
+            // O WhatsApp proibe misturar: "packs must contain either static or
+            // animated stickers, never a mix of both".
+            const sameKind = isAnimatedPack(pack) === needsAnimated;
             const fits = free >= needed && sameKind;
             return (
               <Pressable
@@ -556,7 +588,9 @@ function SaveSheet({
                     {fits
                       ? `${pack.stickers.length}/${MAX_STICKERS} figurinhas`
                       : !sameKind
-                        ? 'pacote animado · não aceita estáticas'
+                        ? needsAnimated
+                          ? 'pacote estático · não aceita animadas'
+                          : 'pacote animado · não aceita estáticas'
                         : free === 0
                           ? `${MAX_STICKERS}/${MAX_STICKERS} · cheio`
                           : `só cabem ${free} · precisa de ${needed}`}

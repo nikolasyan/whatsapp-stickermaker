@@ -111,6 +111,43 @@ export async function stageSourceImage(uri: string): Promise<string> {
 
 export type BuiltSticker = { uri: string; width: number; height: number; bytes: number };
 
+export type BuiltAnimatedSticker = BuiltSticker & { durationMs: number; frameCount: number };
+
+const animatedModule = NativeModules.AnimatedStickerModule as
+  | {
+      buildFromGif(sourceUri: string, destinationPath: string, stretch: boolean): Promise<BuiltAnimatedSticker>;
+    }
+  | undefined;
+
+/** Falso em build que nao foi recompilada depois do modulo de animacao entrar. */
+export const isAnimatedEncoderAvailable = Boolean(animatedModule?.buildFromGif);
+
+/**
+ * Gera figurinha ANIMADA a partir de um GIF.
+ *
+ * Tudo acontece no nativo: decodificar o GIF (GifImage do Fresco), compor os
+ * frames, encaixar no quadrado e codificar o WebP animado dentro de 500 KB.
+ * Nao ha caminho em JS porque nao existe encoder de WebP animado em JS nem na
+ * API do Android — veja plugins/android/AnimatedStickerModule.kt.
+ *
+ * `mode` aqui so distingue Preencher (distorce) de Original (centraliza): o
+ * recorte do uCrop nao se aplica a animacao.
+ */
+export async function buildAnimatedSticker(
+  sourceUri: string,
+  stickerId: string,
+  mode: StickerMode,
+): Promise<BuiltAnimatedSticker> {
+  if (!animatedModule?.buildFromGif) {
+    throw new Error(
+      'O módulo de figurinhas animadas não está nesta build. Rode "npx expo run:android" para recompilar — recarregar o JS não basta.',
+    );
+  }
+  // Mesmo diretorio permanente das estaticas; o nativo grava neste caminho.
+  const destination = stickerDestination(stickerId);
+  return animatedModule.buildFromGif(sourceUri, destination.uri, mode === 'stretch');
+}
+
 /**
  * Centraliza a imagem num quadrado transparente. Delega ao modulo nativo porque a acao
  * `extent` do expo-image-manipulator so existe na web.
