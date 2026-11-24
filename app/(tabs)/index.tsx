@@ -59,6 +59,7 @@ export default function CreateScreen() {
   // Medir o espaco livre evita que ele empurre o rodape para fora da tela.
   const [previewSize, setPreviewSize] = useState(0);
   const [animated, setAnimated] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   function measurePreview(event: LayoutChangeEvent) {
     const { width, height } = event.nativeEvent.layout;
@@ -80,6 +81,19 @@ export default function CreateScreen() {
   }
 
   async function pickFromLibrary() {
+    // A UI do sistema bloqueia o toque depois de abrir, mas o pedido de
+    // permissao antes dela e assincrono: sem guarda, dois toques rapidos
+    // disparavam dois pedidos e dois seletores enfileirados.
+    if (picking) return;
+    setPicking(true);
+    try {
+      await pickFromLibraryInner();
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  async function pickFromLibraryInner() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permissão necessária', 'Permita o acesso às suas fotos para escolher uma imagem.');
@@ -138,6 +152,16 @@ export default function CreateScreen() {
   }
 
   async function takePhoto() {
+    if (picking) return;
+    setPicking(true);
+    try {
+      await takePhotoInner();
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  async function takePhotoInner() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Permissão necessária', 'Permita o acesso à câmera para tirar uma foto.');

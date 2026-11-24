@@ -39,6 +39,8 @@ export default function PackDetailScreen() {
   const [sharing, setSharing] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [removing, setRemoving] = useState(false);
   // Guarda o ID, nao a figurinha: a folha precisa refletir o que foi salvo
   // (emojis, recompressao) e um snapshot ficaria desatualizado.
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -150,7 +152,8 @@ export default function PackDetailScreen() {
   }
 
   async function removeSticker(sticker: Sticker) {
-    if (!pack) return;
+    if (!pack || removing) return;
+    setRemoving(true);
     const remaining = pack.stickers.filter((item) => item.id !== sticker.id);
     try {
       // Grava primeiro, apaga depois: se a gravacao falhar, o arquivo ainda
@@ -163,6 +166,8 @@ export default function PackDetailScreen() {
     } catch (error) {
       Alert.alert('Não foi possível excluir', storageErrorMessage(error));
       return;
+    } finally {
+      setRemoving(false);
     }
     deleteStickerFile(sticker.processedUri);
     setSelectedId(null);
@@ -186,6 +191,11 @@ export default function PackDetailScreen() {
   }
 
   async function downloadSticker(sticker: Sticker) {
+    // Sem guarda, dois toques salvavam a MESMA figurinha duas vezes na galeria
+    // e mostravam dois alertas — o unico lugar do app onde o duplo toque
+    // deixava lixo visivel fora dele.
+    if (downloading) return;
+    setDownloading(true);
     try {
       const permission = await MediaLibrary.requestPermissionsAsync();
       if (!permission.granted) {
@@ -196,6 +206,8 @@ export default function PackDetailScreen() {
       Alert.alert('Imagem baixada', 'A figurinha foi salva na galeria.');
     } catch {
       Alert.alert('Não foi possível baixar', 'Tente novamente.');
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -362,6 +374,8 @@ export default function PackDetailScreen() {
         onDownload={downloadSticker}
         onDelete={removeSticker}
         onEditEmojis={(sticker) => setEmojiTargetId(sticker.id)}
+        downloading={downloading}
+        removing={removing}
       />
 
       {/* Montado so quando aberto: o estado inicial do seletor vale por abertura. */}
@@ -393,7 +407,10 @@ export default function PackDetailScreen() {
               style={[styles.input, { color: palette.text, backgroundColor: palette.surfaceElevated, borderColor: palette.border }]}
             />
             <PrimaryButton label="Salvar" palette={palette} onPress={confirmRename} busy={renaming} />
-            <Pressable onPress={() => setRenameVisible(false)} accessibilityRole="button" style={styles.dialogCancel}>
+            <Pressable
+              onPress={() => setRenameVisible(false)}
+              accessibilityRole="button"
+              style={({ pressed }) => [styles.dialogCancel, pressed && styles.pressed]}>
               <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Cancelar</Text>
             </Pressable>
           </View>
@@ -452,7 +469,8 @@ function ReadinessCard({
                 disabled={compressing}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: compressing }}
-                hitSlop={8}>
+                hitSlop={8}
+                style={({ pressed }) => pressed && styles.pressed}>
                 <Text
                   style={{
                     color: compressing ? palette.textMuted : palette.accentSoft,
@@ -477,6 +495,8 @@ function StickerSheet({
   onDownload,
   onDelete,
   onEditEmojis,
+  downloading,
+  removing,
 }: {
   sticker: Sticker | null;
   palette: JamboPalette;
@@ -484,6 +504,8 @@ function StickerSheet({
   onDownload: (sticker: Sticker) => void;
   onDelete: (sticker: Sticker) => void;
   onEditEmojis: (sticker: Sticker) => void;
+  downloading: boolean;
+  removing: boolean;
 }) {
   return (
     <Modal visible={sticker !== null} transparent animationType="slide" onRequestClose={onClose}>
@@ -519,9 +541,23 @@ function StickerSheet({
             <JamboIcon name="pencil" size={17} color={palette.accentSoft} />
           </Pressable>
 
-          <PrimaryButton label="Baixar imagem" palette={palette} onPress={() => onDownload(sticker)} />
-          <OutlineButton label="Excluir figurinha" tone="danger" palette={palette} onPress={() => onDelete(sticker)} />
-          <Pressable onPress={onClose} accessibilityRole="button" style={styles.dialogCancel}>
+          <PrimaryButton
+            label={downloading ? 'Salvando...' : 'Baixar imagem'}
+            palette={palette}
+            onPress={() => onDownload(sticker)}
+            busy={downloading}
+          />
+          <OutlineButton
+            label={removing ? 'Excluindo...' : 'Excluir figurinha'}
+            tone="danger"
+            palette={palette}
+            onPress={() => onDelete(sticker)}
+            busy={removing}
+          />
+          <Pressable
+            onPress={onClose}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.dialogCancel, pressed && styles.pressed]}>
             <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Fechar</Text>
           </Pressable>
         </View>

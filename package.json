@@ -3,14 +3,15 @@
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
-    "start": "expo start",
     "android": "expo run:android",
+    "icons": "node scripts/generate-icons.js",
+    "ios": "expo run:ios",
     "lint": "expo lint",
+    "start": "expo start",
     "test": "npm run test:pack-file && npm run test:packs-storage && npm run test:config-plugins",
     "test:config-plugins": "node scripts/test-config-plugins.js",
     "test:pack-file": "node scripts/test-pack-file.js",
-    "test:packs-storage": "node scripts/test-packs-storage.js",
-    "ios": "expo run:ios"
+    "test:packs-storage": "node scripts/test-packs-storage.js"
   },
   "dependencies": {
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
@@ -55,6 +56,7 @@
     }
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/react": "~19.1.0",
     "eslint": "^9.25.0",
     "eslint-config-expo": "~10.0.0",

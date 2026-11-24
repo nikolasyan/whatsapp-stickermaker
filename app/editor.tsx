@@ -176,6 +176,10 @@ export default function EditorScreen() {
   }
 
   async function openSaveSheet() {
+    // Dois toques carregavam os pacotes duas vezes. Nao quebrava nada, mas a
+    // segunda leitura chegava depois da folha abrir e podia trocar a lista
+    // debaixo do dedo.
+    if (saveSheetVisible) return;
     try {
       setPacks(await loadPacks());
       setSaveSheetVisible(true);
@@ -488,7 +492,11 @@ export default function EditorScreen() {
         {/* Saida rapida do lote: quem nao quer recortar o resto nao precisa
             passar imagem por imagem so para chegar ao fim da fila. */}
         {isLast ? null : (
-          <Pressable onPress={useWholeForRest} accessibilityRole="button" style={styles.restLink} hitSlop={6}>
+          <Pressable
+            onPress={useWholeForRest}
+            accessibilityRole="button"
+            hitSlop={6}
+            style={({ pressed }) => [styles.restLink, pressed && styles.pressed]}>
             <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 13.5 }}>
               Usar a imagem inteira nas {total - index} restantes
             </Text>
@@ -683,7 +691,10 @@ function SaveSheet({
         </View>
 
         <PrimaryButton label="Criar novo pacote" icon="plusSmall" palette={palette} onPress={onCreate} disabled={busy} />
-        <Pressable onPress={onClose} accessibilityRole="button" style={styles.sheetCancel}>
+        <Pressable
+          onPress={onClose}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.sheetCancel, pressed && styles.pressed]}>
           <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Cancelar</Text>
         </Pressable>
       </View>
@@ -735,7 +746,10 @@ function CreatePackModal({
             style={[styles.input, { color: palette.text, backgroundColor: palette.surfaceElevated, borderColor: palette.border }]}
           />
           <PrimaryButton label={busy ? 'Criando...' : 'Criar pacote'} palette={palette} onPress={onConfirm} busy={busy} />
-          <Pressable onPress={onCancel} accessibilityRole="button" style={styles.sheetCancel}>
+          <Pressable
+            onPress={onCancel}
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.sheetCancel, pressed && styles.pressed]}>
             <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 15 }}>Cancelar</Text>
           </Pressable>
         </View>

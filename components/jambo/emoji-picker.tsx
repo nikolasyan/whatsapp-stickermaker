@@ -113,13 +113,17 @@ export function EmojiPicker({
           <Pressable
             onPress={() => setSelected([])}
             accessibilityRole="button"
-            style={styles.footerAction}
-            hitSlop={6}>
+            hitSlop={6}
+            style={({ pressed }) => [styles.footerAction, pressed && styles.pressed]}>
             <Text style={{ color: palette.accentSoft, fontFamily: JamboFonts.bodyBold, fontSize: 14 }}>
               Limpar
             </Text>
           </Pressable>
-          <Pressable onPress={onCancel} accessibilityRole="button" style={styles.footerAction} hitSlop={6}>
+          <Pressable
+            onPress={onCancel}
+            accessibilityRole="button"
+            hitSlop={6}
+            style={({ pressed }) => [styles.footerAction, pressed && styles.pressed]}>
             <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.bodyBold, fontSize: 14 }}>
               Cancelar
             </Text>
