@@ -24,6 +24,7 @@
       "./plugins/with-whatsapp-stickers",
       "./plugins/with-ucrop-repository",
       "./plugins/with-webp-encoder",
+      "./plugins/with-release-signing",
       [
         "expo-splash-screen",
         {

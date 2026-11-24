@@ -43,3 +43,8 @@ app-example
 # plugins/with-whatsapp-stickers.js e e reaplicado a cada expo prebuild.
 /ios
 /android
+
+# Keystore de assinatura e suas senhas. NUNCA commitar.
+# Perder esta pasta = nao poder mais atualizar o app de ninguem
+# sem que todos desinstalem. Faca backup FORA deste repositorio.
+/credentials

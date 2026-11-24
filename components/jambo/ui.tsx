@@ -159,11 +159,25 @@ export function StatusPill({
 }
 
 /** "512×512 · WebP · máx. 100 KB — o app resolve isso pra você" */
+/**
+ * Linha de especificacao: "512×512 · WebP · máx. 100 KB".
+ *
+ * ALTURA FIXA E UMA LINHA, de proposito. Este chip vive embaixo de areas que se
+ * dimensionam pelo espaco sobrando (`flex: 1`), e antes o texto quebrava
+ * livremente: trocar o texto mudava a altura do chip, mudava a sobra e
+ * REDIMENSIONAVA o preview acima dele. Travar aqui, no componente, impede que
+ * qualquer chamador reintroduza isso escrevendo um texto mais longo.
+ *
+ * Se o texto nao couber em uma linha, encurte o texto — nao remova o
+ * numberOfLines.
+ */
 export function SpecChip({ palette, mono, children }: { palette: JamboPalette; mono: string; children: string }) {
   return (
     <View style={[styles.specChip, { backgroundColor: palette.surface, borderColor: palette.border }]}>
       <Text style={{ color: palette.leaf, fontFamily: JamboFonts.monoMedium, fontSize: 11.5 }}>{mono}</Text>
-      <Text style={{ color: palette.textMuted, fontFamily: JamboFonts.body, fontSize: 12.5, flex: 1 }}>
+      <Text
+        numberOfLines={1}
+        style={{ color: palette.textMuted, fontFamily: JamboFonts.body, fontSize: 12.5, flex: 1 }}>
         {children}
       </Text>
     </View>
@@ -199,10 +213,12 @@ const styles = StyleSheet.create({
     borderRadius: JamboRadius.pill,
   },
   specChip: {
+    // Altura fixa, nao paddingVertical: veja o comentario em SpecChip. Com
+    // padding a altura seguia o texto, e o texto varia por tela.
+    height: 44,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 9,
-    paddingVertical: 13,
     paddingHorizontal: 15,
     borderRadius: 14,
     borderWidth: 1,

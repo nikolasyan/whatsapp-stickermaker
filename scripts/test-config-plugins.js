@@ -282,6 +282,95 @@ dependencies {
   });
 }
 
+// ============================================================= with-release-signing
+
+console.log('\n== with-release-signing (assinatura do APK de release) ==');
+{
+  const { gradle } = loadPlugin('with-release-signing.js', {});
+
+  const template = `apply plugin: "com.android.application"
+
+android {
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
+        release {
+            // Caution! In production, you need to generate your own keystore file.
+            // see https://reactnative.dev/docs/signed-apk-android.
+            signingConfig signingConfigs.debug
+            minifyEnabled enableMinifyInReleaseBuilds
+        }
+    }
+}
+`;
+
+  let aplicado;
+  check('declara a signingConfig de release e carrega as credenciais', () => {
+    aplicado = gradle({ modResults: { language: 'groovy', contents: template } }).modResults.contents;
+    assert(aplicado.includes('jamboSigningReady'), 'nao inseriu o carregador');
+    assert(/signingConfigs \{\s*if \(jamboSigningReady\) \{\s*release \{/.test(aplicado), 'nao declarou a release');
+  });
+
+  check('CRITICO: a keystore fica FORA de android/', () => {
+    // Dentro de android/ o `prebuild --clean` apagaria a chave — e sem a chave
+    // original ninguem consegue atualizar o app sem desinstalar.
+    assert(aplicado.includes("rootProject.file('../credentials/jambo-release.keystore')"), 'caminho da keystore errado');
+    assert(aplicado.includes("rootProject.file('../credentials/keystore.properties')"), 'caminho das senhas errado');
+  });
+
+  check('CRITICO: o release deixa de usar a chave de debug', () => {
+    const blocoRelease = aplicado.match(/release \{[\s\S]*?minifyEnabled/)[0];
+    assert(
+      blocoRelease.includes('signingConfig jamboSigningReady ? signingConfigs.release : signingConfigs.debug'),
+      'o buildType release nao foi trocado: ' + blocoRelease.slice(0, 160),
+    );
+  });
+
+  check('o buildType debug continua com a chave de debug', () => {
+    const blocoDebug = aplicado.match(/buildTypes \{\s*debug \{[\s\S]*?\}/)[0];
+    assert(blocoDebug.includes('signingConfig signingConfigs.debug'), 'mexeu no debug');
+    assert(!blocoDebug.includes('jamboSigningReady'), 'condicionou o debug sem necessidade');
+  });
+
+  check('sem credenciais o Gradle avisa em vez de assinar errado em silencio', () => {
+    assert(/logger.warn\('AVISO/.test(aplicado), 'nao emite aviso quando credentials/ falta');
+  });
+
+  check('idempotente (o prebuild reaplica os mods)', () => {
+    const duas = gradle({ modResults: { language: 'groovy', contents: aplicado } }).modResults.contents;
+    assert((duas.match(/jamboKeystoreProps = new Properties/g) || []).length === 1, 'duplicou o carregador');
+  });
+
+  check('falha alto se o template do Expo mudar', () => {
+    let lancou = false;
+    try {
+      gradle({ modResults: { language: 'groovy', contents: 'android {\n}\n' } });
+    } catch {
+      lancou = true;
+    }
+    assert(lancou, 'aceitou em silencio um build.gradle sem as ancoras');
+  });
+
+  check('falha alto se o build.gradle virar Kotlin DSL', () => {
+    let lancou = false;
+    try {
+      gradle({ modResults: { language: 'kt', contents: template } });
+    } catch {
+      lancou = true;
+    }
+    assert(lancou, 'aceitou um .kts como se fosse Groovy');
+  });
+}
+
 // =========================================================== with-whatsapp-stickers
 
 console.log('\n== with-whatsapp-stickers (package: ' + ANDROID_PACKAGE + ') ==');

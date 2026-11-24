@@ -194,22 +194,28 @@ export default function CreateScreen() {
             <Text style={[styles.tagline, { color: palette.textMuted }]}>STICKER MAKER</Text>
           </View>
         </View>
+
+        {/* No cabecalho: o lado direito estava vazio, e aqui o seletor nao
+            empurra nem encosta no preview. */}
+        <View style={[styles.switcher, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <KindTab label="Estática" active={!animated} palette={palette} onPress={() => setAnimated(false)} />
+          <KindTab label="Animada" active={animated} palette={palette} onPress={() => setAnimated(true)} />
+        </View>
       </View>
 
+      {/* Altura FIXA de proposito. Antes o bloco crescia e encolhia com o
+          tamanho do texto de cada modo, e como o preview abaixo e `flex: 1` ele
+          mudava de tamanho ao alternar Estática/Animada. O numberOfLines
+          garante que nenhum texto estoure a altura reservada. */}
       <View style={styles.titleBlock}>
-        <Text style={[styles.title, { color: palette.text }]}>
-          {animated ? 'Figurinha animada' : 'Preview da sua imagem'}
+        <Text style={[styles.title, { color: palette.text }]} numberOfLines={1}>
+          {animated ? 'Figurinha animada' : 'Figurinha estática'}
         </Text>
-        <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
+        <Text style={[styles.subtitle, { color: palette.textSecondary }]} numberOfLines={2}>
           {animated
             ? 'Escolha um GIF ou um vídeo. Vira uma animação dos primeiros 10 segundos.'
             : 'Escolha uma ou várias fotos, ou tire uma na hora. Recorte depois.'}
         </Text>
-      </View>
-
-      <View style={[styles.switcher, { backgroundColor: palette.surface, borderColor: palette.border }]}>
-        <KindTab label="Imagem" active={!animated} palette={palette} onPress={() => setAnimated(false)} />
-        <KindTab label="Animada" active={animated} palette={palette} onPress={() => setAnimated(true)} />
       </View>
 
       <View style={styles.previewWrap} onLayout={measurePreview}>
@@ -233,7 +239,9 @@ export default function CreateScreen() {
           accessibilityRole="button"
           style={({ pressed }) => [styles.galleryButton, { backgroundColor: palette.accent }, pressed && styles.pressed]}>
           <JamboIcon name={animated ? 'frame' : 'camera'} size={19} color={palette.onAccent} />
-          <Text style={[styles.galleryLabel, { color: palette.onAccent }]}>
+          {/* Uma linha: "Escolher GIF ou vídeo" cabe hoje, mas se um rotulo
+              futuro quebrar, o botao passa de 56 e o preview acima encolhe. */}
+          <Text numberOfLines={1} style={[styles.galleryLabel, { color: palette.onAccent }]}>
             {animated ? 'Escolher GIF ou vídeo' : 'Galeria'}
           </Text>
         </Pressable>
@@ -245,9 +253,8 @@ export default function CreateScreen() {
 
       <View style={styles.specWrap}>
         <SpecChip palette={palette} mono="512×512">
-          {animated
-            ? ' · WebP animado · máx. 500 KB · até 10 s'
-            : ' · WebP · máx. 100 KB — o app resolve isso pra você'}
+          {/* Curto o suficiente para uma linha: o chip e de altura fixa. */}
+          {animated ? ' · WebP animado · máx. 500 KB' : ' · WebP · máx. 100 KB'}
         </SpecChip>
       </View>
     </SafeAreaView>
@@ -279,7 +286,7 @@ function KindTab({
         style={{
           color: active ? palette.accentSoft : palette.textMuted,
           fontFamily: active ? JamboFonts.bodyBold : JamboFonts.bodySemi,
-          fontSize: 14,
+          fontSize: 12.5,
         }}>
         {label}
       </Text>
@@ -289,15 +296,15 @@ function KindTab({
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  switcher: {
-    flexDirection: 'row',
-    marginHorizontal: 24,
-    padding: 4,
-    gap: 4,
-    borderRadius: JamboRadius.md,
-    borderWidth: 1,
+  // Compacto: vive no cabecalho, ao lado da marca, nao mais em largura cheia.
+  switcher: { flexDirection: 'row', padding: 3, gap: 3, borderRadius: JamboRadius.md, borderWidth: 1 },
+  kindTab: {
+    minHeight: 30,
+    paddingHorizontal: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: JamboRadius.sm,
   },
-  kindTab: { flex: 1, minHeight: 38, alignItems: 'center', justifyContent: 'center', borderRadius: JamboRadius.sm },
   watermark: { position: 'absolute', top: -60, right: -70, opacity: 0.35 },
   header: {
     flexDirection: 'row',
@@ -311,8 +318,14 @@ const styles = StyleSheet.create({
   brandText: { gap: 1 },
   wordmark: { fontFamily: JamboFonts.display, fontSize: 19, letterSpacing: -0.6 },
   tagline: { fontFamily: JamboFonts.bodySemi, fontSize: 8.5, letterSpacing: 1.3 },
-  titleBlock: { paddingHorizontal: 24, paddingTop: 22, paddingBottom: 18, gap: 6 },
-  title: { fontFamily: JamboFonts.display, fontSize: 34, lineHeight: 37, letterSpacing: -1.2 },
+  /**
+   * Altura fixa: 1 linha de titulo (33) + gap (6) + 2 linhas de subtitulo (42),
+   * mais os paddings. E o que impede o preview de mudar de tamanho ao alternar
+   * o tipo de figurinha.
+   */
+  titleBlock: { height: 22 + 33 + 6 + 42 + 18, paddingHorizontal: 24, paddingTop: 22, paddingBottom: 18, gap: 6 },
+  // 30 e nao 34: "Figurinha estática" cabe em uma linha na largura tipica.
+  title: { fontFamily: JamboFonts.display, fontSize: 30, lineHeight: 33, letterSpacing: -1.1 },
   subtitle: { fontFamily: JamboFonts.body, fontSize: 14.5, lineHeight: 21 },
   previewWrap: { flex: 1, paddingHorizontal: 24, alignItems: 'center', justifyContent: 'center' },
   preview: { borderRadius: JamboRadius.xxl, borderWidth: 1.5, borderStyle: 'dashed' },
