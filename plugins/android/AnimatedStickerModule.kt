@@ -65,15 +65,8 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     private val QUALITY_STEPS = listOf(80f, 65f, 50f, 35f, 20f)
 
     /**
-     * Amostragem de VIDEO. Diferente do GIF, video nao traz duracao por frame —
-     * nos escolhemos a taxa. E o teto de frames manda sobre o fps desejado:
-     * medido no aparelho, 90 frames de 512x512 mal couberam em 500 KB na
-     * qualidade 20. Pedir 12 fps em 10 s dariam 120 frames, que nao caberiam em
-     * qualidade nenhuma e so gastariam tempo na escada antes de decimar.
-     */
-    /**
-     * Previa: 256px e 1/4 do trabalho de pixel de 512px, e previa nao precisa
-     * caber em 500 KB — uma passada de encoding, sem escada.
+     * Previa: 1/4 do trabalho de pixel de 512px, e previa nao precisa caber em
+     * 500 KB — uma passada de encoding, sem escada de qualidade.
      *
      * Nao menor que isso: o canvas do editor tem ~345dp, entao 128px chegaria
      * ampliada varias vezes e pareceria defeito em vez de previa.
@@ -81,6 +74,13 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     private const val PREVIEW_SIDE = 256
     private const val PREVIEW_QUALITY = 70f
 
+    /**
+     * Amostragem de VIDEO. Diferente do GIF, video nao traz duracao por frame —
+     * nos escolhemos a taxa. E o teto de frames manda sobre o fps desejado:
+     * medido no aparelho, 90 frames de 512x512 mal couberam em 500 KB na
+     * qualidade 20. Pedir 12 fps em 10 s dariam 120 frames, que nao caberiam em
+     * qualidade nenhuma e so gastariam tempo na escada antes de decimar.
+     */
     private const val TARGET_FPS = 12
     private const val MAX_FRAMES = 60
   }
@@ -346,28 +346,42 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
       }
       val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
 
-      val usableMs = minOf(durationMs, MAX_DURATION_MS.toLong()).coerceAtLeast(1L)
+      // Duracao invalida nao vira animacao de um frame: um video de 0 ms e um
+      // arquivo quebrado, e aceitar isso produziria uma figurinha "animada" com
+      // um quadro so em vez de dizer o que esta errado.
+      if (durationMs <= 0) throw IllegalArgumentException("Este video tem duracao invalida.")
+
+      val usableMs = minOf(durationMs, MAX_DURATION_MS.toLong())
       // O teto de frames manda sobre o fps desejado: pedir 12 fps em 10 s daria
       // 120 frames, que nao cabem em 500 KB em qualidade nenhuma.
       val fps = minOf(TARGET_FPS, maxOf(1, (MAX_FRAMES * 1000L / usableMs).toInt()))
       val frameMs = maxOf(MIN_FRAME_MS, 1000 / fps)
       val count = maxOf(1, (usableMs / frameMs).toInt()).coerceAtMost(MAX_FRAMES)
 
-      // Extrair JA REDUZIDO: um frame 4K em resolucao cheia e ~33 MB de bitmap,
-      // e sao dezenas deles. Preserva a proporcao; o toSquare faz o resto.
-      val (targetWidth, targetHeight) = scaledSize(sourceWidth, sourceHeight, side)
-
       Log.d(TAG, "video ${sourceWidth}x$sourceHeight rot=$rotation ${durationMs}ms -> $count frames a $fps fps")
 
-      for (index in 0 until count) {
-        val raw = frameAt(retriever, index.toLong() * frameMs * 1000L, targetWidth, targetHeight) ?: continue
-        val upright = uprightFrame(raw, rotation, sourceWidth, sourceHeight)
-        try {
-          out.add(Frame(toSquare(upright, stretch, side), frameMs))
-        } finally {
-          if (upright !== raw) upright.recycle()
-          raw.recycle()
+      try {
+        for (index in 0 until count) {
+          // Caixa QUADRADA de propósito. A caixa saia das dimensoes do metadata,
+          // que sao PRE-ROTACAO: num video retrato (metadata paisagem) o frame
+          // ja endireitado era encaixado numa caixa deitada e saia limitado pelo
+          // lado menor — o toSquare depois ampliava, e a figurinha ficava mole.
+          // Com a caixa quadrada o lado maior sempre chega no alvo, qualquer que
+          // seja a orientacao, e nao dependemos de saber se o retriever girou.
+          val raw = frameAt(retriever, index.toLong() * frameMs * 1000L, side) ?: continue
+          val upright = uprightFrame(raw, rotation, sourceWidth, sourceHeight)
+          try {
+            out.add(Frame(toSquare(upright, stretch, side), frameMs))
+          } finally {
+            if (upright !== raw) upright.recycle()
+            raw.recycle()
+          }
         }
+      } catch (error: Throwable) {
+        // Os frames ja prontos nao tem mais dono: sem isto eles ficam para o GC
+        // como todo o resto do arquivo evita fazer.
+        for (frame in out) frame.bitmap.recycle()
+        throw error
       }
 
       if (out.isEmpty()) throw IllegalArgumentException("Nao foi possivel extrair frames deste video.")
@@ -386,22 +400,35 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     }
   }
 
-  /** Dimensoes com o maior lado em 512, preservando a proporcao. */
-  private fun scaledSize(width: Int, height: Int, side: Int): Pair<Int, Int> {
-    val scale = side.toFloat() / maxOf(width, height)
-    return Pair(maxOf(1, (width * scale).toInt()), maxOf(1, (height * scale).toInt()))
-  }
-
-  private fun frameAt(retriever: MediaMetadataRetriever, timeUs: Long, width: Int, height: Int): Bitmap? =
-    // OPTION_CLOSEST e nao OPTION_CLOSEST_SYNC: SYNC salta para o keyframe mais
-    // proximo, e keyframes podem estar segundos distantes — amostrando a 12 fps
-    // isso devolveria o MESMO frame repetidas vezes e a animacao sairia travada.
-    // CLOSEST decodifica ate o frame real; mais lento, mas e o que anima.
+  /**
+   * Frame no instante pedido, com o lado maior em no maximo `side`.
+   *
+   * OPTION_CLOSEST e nao OPTION_CLOSEST_SYNC: SYNC salta para o keyframe mais
+   * proximo, e keyframes podem estar segundos distantes — amostrando a 12 fps
+   * isso devolveria o MESMO frame repetidas vezes e a animacao sairia travada.
+   * CLOSEST decodifica ate o frame real; mais lento, mas e o que anima.
+   */
+  private fun frameAt(retriever: MediaMetadataRetriever, timeUs: Long, side: Int): Bitmap? {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-      retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, width, height)
-    } else {
-      retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+      return retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, side, side)
     }
+    // getFrameAtTime IGNORA dimensoes e devolve o frame em resolucao cheia.
+    // Sem reduzir aqui, um video 4K no Android 7/8 (o minSdk e 24) mantem
+    // bitmaps de ~33 MB e derruba o app — exatamente o que a extracao reduzida
+    // existe para evitar nas versoes mais novas.
+    val full = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: return null
+    val largest = maxOf(full.width, full.height)
+    if (largest <= side) return full
+    val scale = side.toFloat() / largest
+    val scaled = Bitmap.createScaledBitmap(
+      full,
+      maxOf(1, (full.width * scale).toInt()),
+      maxOf(1, (full.height * scale).toInt()),
+      true,
+    )
+    if (scaled !== full) full.recycle()
+    return scaled
+  }
 
   /**
    * Endireita o frame — mas so quando da para TER CERTEZA de que e preciso.
@@ -411,17 +438,22 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
    * o bitmap voltou com a mesma orientacao do metadata, a rotacao nao foi
    * aplicada e nos aplicamos. Supor errado gira duas vezes.
    *
-   * Limitacao conhecida: 180 graus nao troca as dimensoes, entao nao e
-   * detectavel assim e assumimos que o retriever cuidou. Um video gravado de
-   * cabeca para baixo pode sair invertido — caso raro, e "invertido" e melhor
-   * que "deitado em todo video retrato", que seria o custo de supor errado.
+   * Duas limitacoes conhecidas, pelo mesmo motivo — a comparacao de dimensoes
+   * nao distingue esses casos:
+   *  - 180 graus nao troca as dimensoes;
+   *  - video QUADRADO nao troca as dimensoes em nenhuma rotacao.
+   * Nos dois assumimos que o retriever cuidou, e nao giramos. Preferir o "nao
+   * girar" e deliberado: girar duas vezes estraga TODO video desses, enquanto
+   * nao girar estraga so os que o retriever nao tratou.
    */
   private fun uprightFrame(frame: Bitmap, rotation: Int, sourceWidth: Int, sourceHeight: Int): Bitmap {
     val quarterTurn = rotation == 90 || rotation == 270
     if (!quarterTurn) return frame
+    // Quadrado: indetectavel, veja o KDoc.
+    if (sourceWidth == sourceHeight || frame.width == frame.height) return frame
 
-    val sourceIsLandscape = sourceWidth >= sourceHeight
-    val frameIsLandscape = frame.width >= frame.height
+    val sourceIsLandscape = sourceWidth > sourceHeight
+    val frameIsLandscape = frame.width > frame.height
     // Orientacoes iguais = o retriever nao girou nada.
     if (sourceIsLandscape != frameIsLandscape) return frame
 

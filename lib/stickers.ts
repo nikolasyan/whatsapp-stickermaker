@@ -5,8 +5,8 @@ import { NativeModules } from 'react-native';
 import { MAX_STICKER_BYTES, type StickerMode } from '@/lib/packs';
 
 const STICKERS_DIRECTORY = 'stickers';
-/** Miniaturas de video no cache — a limpeza do boot conhece este nome. */
-const THUMBNAILS_DIRECTORY = 'thumbnails';
+/** Previas animadas no cache — a limpeza do boot conhece este nome. */
+const PREVIEWS_DIRECTORY = 'previews';
 const STICKER_SIDE = 512;
 const QUALITY_STEPS = [0.9, 0.75, 0.6, 0.45, 0.3, 0.15];
 
@@ -15,10 +15,14 @@ const imageModule = NativeModules.WhatsAppStickerModule as
   | undefined;
 
 /**
- * manipulateAsync grava no cache interno, que o Android limpa sozinho.
- * Como o URI fica salvo no AsyncStorage, a figurinha precisa ir para um diretorio permanente.
+/**
+ * Caminho permanente e vazio para uma figurinha, com o diretorio garantido.
+ *
+ * Por que o diretorio de documentos e nao o cache: o URI fica salvo no
+ * AsyncStorage, e o manipulateAsync (como todo o resto) grava no cache interno,
+ * que o Android limpa sozinho. Uma figurinha apontando para o cache e uma
+ * figurinha que some.
  */
-/** Caminho permanente e vazio para uma figurinha, com o diretorio garantido. */
 function stickerDestination(stickerId: string): File {
   const directory = new Directory(Paths.document, STICKERS_DIRECTORY);
   if (!directory.exists) directory.create({ intermediates: true });
@@ -77,7 +81,7 @@ export function deleteStickerFile(uri: string) {
  */
 export function clearTransientCache() {
   try {
-    for (const name of ['ImagePicker', 'ImageManipulator', 'exports', THUMBNAILS_DIRECTORY]) {
+    for (const name of ['ImagePicker', 'ImageManipulator', 'exports', PREVIEWS_DIRECTORY]) {
       const directory = new Directory(Paths.cache, name);
       if (directory.exists) directory.delete();
     }
@@ -141,22 +145,15 @@ const animatedModule = NativeModules.AnimatedStickerModule as
 export const isAnimatedEncoderAvailable = Boolean(animatedModule?.buildFromGif);
 
 /**
- * Gera figurinha ANIMADA a partir de um GIF.
- *
- * Tudo acontece no nativo: decodificar o GIF (GifImage do Fresco), compor os
- * frames, encaixar no quadrado e codificar o WebP animado dentro de 500 KB.
- * Nao ha caminho em JS porque nao existe encoder de WebP animado em JS nem na
- * API do Android — veja plugins/android/AnimatedStickerModule.kt.
- *
- * `mode` aqui so distingue Preencher (distorce) de Original (centraliza): o
- * recorte do uCrop nao se aplica a animacao.
- */
-/**
  * Previa ANIMADA do que a figurinha vai ser.
  *
  * Passa pelo mesmo pipeline da figurinha final — compor, encaixar, codificar
- * WebP animado — so em 128px. Por isso mostra o enquadramento, a distorcao do
- * modo Preencher, o movimento e o loop de verdade, em vez de aproximar.
+ * WebP animado — so numa resolucao menor (PREVIEW_SIDE, no modulo nativo). Por
+ * isso mostra o enquadramento, a distorcao do modo Preencher, o movimento e o
+ * loop de verdade, em vez de aproximar.
+ *
+ * Nao e identica ao resultado: se a escada precisar decimar frames para caber
+ * em 500 KB, a figurinha final tera MENOS frames que a previa.
  *
  * Vai para o cache: e descartavel, e a limpeza do boot leva embora.
  */
@@ -169,7 +166,7 @@ export async function animatedPreview(
   if (!animatedModule?.animatedPreview) {
     throw new Error('O módulo de figurinhas animadas não está nesta build.');
   }
-  const directory = new Directory(Paths.cache, THUMBNAILS_DIRECTORY);
+  const directory = new Directory(Paths.cache, PREVIEWS_DIRECTORY);
   if (!directory.exists) directory.create({ intermediates: true });
   return animatedModule.animatedPreview(
     sourceUri,
@@ -179,6 +176,18 @@ export async function animatedPreview(
   );
 }
 
+/**
+ * Gera figurinha ANIMADA a partir de um GIF ou de um video.
+ *
+ * Tudo acontece no nativo: decodificar (GifImage do Fresco para GIF,
+ * MediaMetadataRetriever para video), compor os frames, encaixar no quadrado e
+ * codificar o WebP animado dentro de 500 KB. Nao ha caminho em JS porque nao
+ * existe encoder de WebP animado em JS nem na API do Android — veja
+ * plugins/android/AnimatedStickerModule.kt.
+ *
+ * `mode` aqui so distingue Preencher (distorce) de Original (centraliza): o
+ * recorte do uCrop nao se aplica a animacao.
+ */
 export async function buildAnimatedSticker(
   sourceUri: string,
   stickerId: string,

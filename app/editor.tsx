@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import ImageCropPicker from 'react-native-image-crop-picker';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -52,6 +52,8 @@ export default function EditorScreen() {
    * `undefined` = gerando, `null` = falhou.
    */
   const [previews, setPreviews] = useState<Record<string, string | null>>({});
+  /** Chaves cujo job nativo ja comecou — evita disparar o mesmo duas vezes. */
+  const startedPreviews = useRef<Set<string>>(new Set());
   const [saveSheetVisible, setSaveSheetVisible] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -74,7 +76,12 @@ export default function EditorScreen() {
     // jeito de a previa mostrar o movimento e o enquadramento de verdade — e
     // para video e tambem o unico jeito de mostrar qualquer coisa, porque o
     // <Image> do RN nao renderiza video.
-    if (!current || !previewKey || previewKey in previews) return;
+    // `previews` so recebe a chave quando o nativo TERMINA, entao checar so por
+    // ele deixa passar um segundo job para a mesma chave enquanto o primeiro
+    // roda — dois encodings concorrentes gravando o mesmo arquivo de cache, e o
+    // resultado do primeiro descartado. O ref marca a chave na largada.
+    if (!current || !previewKey || previewKey in previews || startedPreviews.current.has(previewKey)) return;
+    startedPreviews.current.add(previewKey);
     let active = true;
     animatedPreview(
       current.sourceUri,
