@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import ImageCropPicker from 'react-native-image-crop-picker';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ import { IconButton, PrimaryButton } from '@/components/jambo/ui';
 import { JamboFonts, JamboRadius, type JamboPalette } from '@/constants/jambo-theme';
 import { useJamboTheme } from '@/hooks/use-jambo-theme';
 import {
+  MAX_ANIMATION_MS,
   MAX_STICKERS,
   isAnimatedPack,
   loadPacks,
@@ -22,7 +23,7 @@ import {
   type StickerMode,
 } from '@/lib/packs';
 import { getQueue } from '@/lib/sticker-queue';
-import { buildAnimatedSticker, buildSticker, stageSourceImage } from '@/lib/stickers';
+import { animatedPreview, buildAnimatedSticker, buildSticker, stageSourceImage } from '@/lib/stickers';
 
 /** Decisao de enquadramento de UMA imagem do lote. */
 type Decision = { mode: StickerMode; croppedUri: string | null };
@@ -42,6 +43,15 @@ export default function EditorScreen() {
   const [index, setIndex] = useState(0);
   const [decisions, setDecisions] = useState<Decision[]>(() => initial.images.map(() => DEFAULT_DECISION));
   const [staging, setStaging] = useState(false);
+  /**
+   * Previa animada por URI + MODO.
+   *
+   * Nao por posicao: o "Descartar esta" desloca os indices e um mapa por
+   * posicao passaria a mostrar a previa de outro arquivo. E o modo entra na
+   * chave porque Original e Preencher produzem resultados diferentes.
+   * `undefined` = gerando, `null` = falhou.
+   */
+  const [previews, setPreviews] = useState<Record<string, string | null>>({});
   const [saveSheetVisible, setSaveSheetVisible] = useState(false);
   const [createVisible, setCreateVisible] = useState(false);
   const [packs, setPacks] = useState<Pack[]>([]);
@@ -56,6 +66,35 @@ export default function EditorScreen() {
   const mode = decision.mode;
   const displayedUri = decision.croppedUri ?? current?.sourceUri;
   const isLast = index >= total - 1;
+
+  const previewKey = current && animated ? `${current.sourceUri}|${mode}` : null;
+
+  useEffect(() => {
+    // Gera a previa pelo MESMO pipeline da figurinha final, so menor. E o unico
+    // jeito de a previa mostrar o movimento e o enquadramento de verdade — e
+    // para video e tambem o unico jeito de mostrar qualquer coisa, porque o
+    // <Image> do RN nao renderiza video.
+    if (!current || !previewKey || previewKey in previews) return;
+    let active = true;
+    animatedPreview(
+      current.sourceUri,
+      previewKey.replace(/[^a-zA-Z0-9]/g, '').slice(-48),
+      mode,
+      current.kind === 'video' ? 'video' : 'gif',
+    )
+      .then((preview) => {
+        if (active) setPreviews((previous) => ({ ...previous, [previewKey]: preview.uri }));
+      })
+      .catch((error) => {
+        // Previa e conveniencia: falhar aqui nao pode impedir de gerar a
+        // figurinha, so cai no aviso de que nao ha pre-visualizacao.
+        console.warn('[editor] nao foi possivel gerar a previa', error);
+        if (active) setPreviews((previous) => ({ ...previous, [previewKey]: null }));
+      });
+    return () => {
+      active = false;
+    };
+  }, [current, previewKey, mode, previews]);
 
   function setCurrentDecision(value: Decision) {
     setDecisions((previous) => previous.map((item, position) => (position === index ? value : item)));
@@ -159,7 +198,14 @@ export default function EditorScreen() {
           // Caminhos genuinamente diferentes: a animada decodifica o GIF, compoe
           // os frames e codifica WebP animado, tudo no nativo.
           if (animated) {
-            const built = await buildAnimatedSticker(source, stickerId, item.mode);
+            const built = await buildAnimatedSticker(
+              source,
+              stickerId,
+              item.mode,
+              // GIF e video tem extratores diferentes no nativo, mas produzem o
+              // mesmo WebP animado e podem conviver num pacote.
+              images[position].kind === 'video' ? 'video' : 'gif',
+            );
             stickers.push({
               id: stickerId,
               processedUri: built.uri,
@@ -313,11 +359,38 @@ export default function EditorScreen() {
               `stretch` no modo Preencher. Nunca `cover`, que mostrava um
               enquadramento ampliado e cortado que o arquivo gerado nao tinha. */}
           <View style={styles.imageArea}>
-            <Image
-              source={{ uri: displayedUri }}
-              style={styles.canvasImage}
-              resizeMode={mode === 'stretch' ? 'stretch' : 'contain'}
-            />
+            {/* O <Image> do RN nao renderiza video. Em vez de um canvas em
+                branco que parece defeito, diz o que esta acontecendo. */}
+            {animated && previewKey ? (
+              previews[previewKey] ? (
+                // `contain` sempre: o enquadramento (incluindo o esticado do
+                // modo Preencher) ja esta embutido no arquivo da previa.
+                // Aplicar `stretch` aqui distorceria uma segunda vez.
+                <Image source={{ uri: previews[previewKey] as string }} style={styles.canvasImage} resizeMode="contain" />
+              ) : (
+                <View style={styles.videoPlaceholder}>
+                  {previewKey in previews ? (
+                    <JamboIcon name="frame" size={46} color={palette.textMuted} />
+                  ) : (
+                    <ActivityIndicator size="small" color={palette.textMuted} />
+                  )}
+                  <Text style={[styles.videoPlaceholderTitle, { color: palette.textSecondary }]}>
+                    {current.kind === 'video' ? 'Vídeo' : 'GIF'}
+                  </Text>
+                  <Text style={[styles.videoPlaceholderBody, { color: palette.textMuted }]}>
+                    {previewKey in previews
+                      ? `Não foi possível pré-visualizar este arquivo, mas a figurinha ainda pode ser gerada. Os primeiros ${MAX_ANIMATION_MS / 1000} s viram a animação.`
+                      : 'Montando a prévia animada...'}
+                  </Text>
+                </View>
+              )
+            ) : (
+              <Image
+                source={{ uri: displayedUri }}
+                style={styles.canvasImage}
+                resizeMode={mode === 'stretch' ? 'stretch' : 'contain'}
+              />
+            )}
           </View>
           <View style={[styles.dimensionBadge, { backgroundColor: palette.bg }]}>
             <Text style={{ color: palette.leaf, fontFamily: JamboFonts.monoMedium, fontSize: 10.5 }}>512 × 512</Text>
@@ -670,6 +743,9 @@ const styles = StyleSheet.create({
   emptyTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 21, textAlign: 'center' },
   emptyBody: { fontFamily: JamboFonts.body, fontSize: 14, lineHeight: 21, textAlign: 'center' },
   restLink: { minHeight: 40, alignItems: 'center', justifyContent: 'center' },
+  videoPlaceholder: { alignItems: 'center', justifyContent: 'center', gap: 10, paddingHorizontal: 34 },
+  videoPlaceholderTitle: { fontFamily: JamboFonts.displaySemi, fontSize: 17 },
+  videoPlaceholderBody: { fontFamily: JamboFonts.body, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

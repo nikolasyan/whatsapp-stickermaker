@@ -3,9 +3,12 @@ package __PACKAGE__.whatsapp
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.PorterDuff
 import android.graphics.Rect
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import com.aureusapps.android.webpandroid.encoder.WebPAnimEncoder
 import com.aureusapps.android.webpandroid.encoder.WebPAnimEncoderOptions
@@ -60,6 +63,26 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
 
     /** Escada de qualidade, no mesmo espirito da usada na figurinha estatica. */
     private val QUALITY_STEPS = listOf(80f, 65f, 50f, 35f, 20f)
+
+    /**
+     * Amostragem de VIDEO. Diferente do GIF, video nao traz duracao por frame —
+     * nos escolhemos a taxa. E o teto de frames manda sobre o fps desejado:
+     * medido no aparelho, 90 frames de 512x512 mal couberam em 500 KB na
+     * qualidade 20. Pedir 12 fps em 10 s dariam 120 frames, que nao caberiam em
+     * qualidade nenhuma e so gastariam tempo na escada antes de decimar.
+     */
+    /**
+     * Previa: 256px e 1/4 do trabalho de pixel de 512px, e previa nao precisa
+     * caber em 500 KB — uma passada de encoding, sem escada.
+     *
+     * Nao menor que isso: o canvas do editor tem ~345dp, entao 128px chegaria
+     * ampliada varias vezes e pareceria defeito em vez de previa.
+     */
+    private const val PREVIEW_SIDE = 256
+    private const val PREVIEW_QUALITY = 70f
+
+    private const val TARGET_FPS = 12
+    private const val MAX_FRAMES = 60
   }
 
   override fun getName() = "AnimatedStickerModule"
@@ -70,9 +93,55 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
    */
   @ReactMethod
   fun buildFromGif(sourceUri: String, destinationPath: String, stretch: Boolean, promise: Promise) {
+    onThread(promise) { encodeFrames(gifFrames(sourceUri, stretch, SIDE), destinationPath) }
+  }
+
+  @ReactMethod
+  fun buildFromVideo(sourceUri: String, destinationPath: String, stretch: Boolean, promise: Promise) {
+    onThread(promise) { encodeFrames(videoFrames(sourceUri, stretch, SIDE), destinationPath) }
+  }
+
+  /**
+   * Previa ANIMADA, passando pelo mesmo pipeline da figurinha final: compor,
+   * encaixar no quadrado e codificar WebP animado. So menor.
+   *
+   * E o que permite ver o enquadramento, a distorcao do modo Preencher, o
+   * movimento e o loop antes de gerar. Barata porque e menor e porque previa nao
+   * tem limite de 500 KB para respeitar — uma passada de encoding, sem escada.
+   *
+   * Serve GIF e video: para GIF tambem e um ganho, porque antes a previa era o
+   * ARQUIVO DE ORIGEM animando, sem mostrar o quadramento.
+   */
+  @ReactMethod
+  fun animatedPreview(
+    sourceUri: String,
+    destinationPath: String,
+    stretch: Boolean,
+    fromVideo: Boolean,
+    promise: Promise,
+  ) {
+    onThread(promise) {
+      val frames =
+        if (fromVideo) videoFrames(sourceUri, stretch, PREVIEW_SIDE)
+        else gifFrames(sourceUri, stretch, PREVIEW_SIDE)
+      try {
+        if (frames.isEmpty()) throw IllegalArgumentException("Nao foi possivel ler os frames.")
+        val destination = File(stripFileScheme(destinationPath))
+        destination.parentFile?.mkdirs()
+        val written = encode(frames, PREVIEW_QUALITY, destination, PREVIEW_SIDE)
+        Log.d(TAG, "previa: ${frames.size} frames em ${PREVIEW_SIDE}px -> $written bytes")
+        result(destination, written, frames, PREVIEW_SIDE)
+      } finally {
+        for (frame in frames) frame.bitmap.recycle()
+      }
+    }
+  }
+
+  /** Thread propria e traducao de erro, iguais para os dois caminhos. */
+  private fun onThread(promise: Promise, work: () -> WritableMap) {
     Thread {
       try {
-        promise.resolve(encodeGif(sourceUri, destinationPath, stretch))
+        promise.resolve(work())
       } catch (error: Throwable) {
         Log.e(TAG, "Falha ao gerar figurinha animada", error)
         promise.reject("ANIMATED_STICKER_FAILED", error.message ?: "Falha ao gerar a figurinha animada", error)
@@ -80,15 +149,24 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     }.start()
   }
 
-  private fun encodeGif(sourceUri: String, destinationPath: String, stretch: Boolean): WritableMap {
-    val bytes = readBytes(sourceUri)
-    val gif = GifImage.createFromByteArray(bytes)
-    var candidate: List<Frame> = emptyList()
+  private fun gifFrames(sourceUri: String, stretch: Boolean, side: Int): List<Frame> {
+    val gif = GifImage.createFromByteArray(readBytes(sourceUri))
     try {
       if (gif.frameCount <= 0) throw IllegalArgumentException("O GIF nao tem frames.")
+      return composeFrames(gif, stretch, side)
+    } finally {
+      gif.dispose()
+    }
+  }
 
-      candidate = composeFrames(gif, stretch)
-      if (candidate.isEmpty()) throw IllegalArgumentException("Nao foi possivel ler os frames do GIF.")
+  /**
+   * Escada de compressao, compartilhada por GIF e video: depois da extracao os
+   * dois sao apenas uma lista de frames quadrados com duracao.
+   */
+  private fun encodeFrames(frames: List<Frame>, destinationPath: String): WritableMap {
+    var candidate = frames
+    try {
+      if (candidate.isEmpty()) throw IllegalArgumentException("Nao foi possivel ler os frames.")
 
       // Aceita caminho puro ou file:// — o expo-file-system do lado JS sempre
       // entrega URI com esquema, e File("file:///...") nao resolve.
@@ -106,7 +184,7 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
         val steps = stepsFor(candidate.size)
         Log.d(TAG, "${candidate.size} frames: tentando qualidades $steps")
         for (quality in steps) {
-          val written = encode(candidate, quality, destination)
+          val written = encode(candidate, quality, destination, SIDE)
           if (written <= MAX_BYTES) {
             var finalBytes = written
             var finalQuality = quality
@@ -117,7 +195,7 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
             // e clara, para nao desfazer o ganho de tempo.
             val better = QUALITY_STEPS.getOrNull(QUALITY_STEPS.indexOf(quality) - 1)
             if (better != null && written < MAX_BYTES / 2) {
-              val upgraded = encode(candidate, better, destination)
+              val upgraded = encode(candidate, better, destination, SIDE)
               if (upgraded <= MAX_BYTES) {
                 finalBytes = upgraded
                 finalQuality = better
@@ -125,12 +203,12 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
                 // A tentativa melhor deixou o arquivo ACIMA do limite no
                 // destino. Reescrever com a qualidade que cabia nao e
                 // opcional: sem isto entregariamos o arquivo grande.
-                finalBytes = encode(candidate, quality, destination)
+                finalBytes = encode(candidate, quality, destination, SIDE)
               }
             }
 
             Log.d(TAG, "Gerado com qualidade $finalQuality, ${candidate.size} frames, $finalBytes bytes")
-            return result(destination, finalBytes, candidate)
+            return result(destination, finalBytes, candidate, SIDE)
           }
         }
         if (candidate.size <= 2) break
@@ -140,18 +218,17 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
 
       throw IllegalStateException("Esta animacao nao cabe em 500 KB nem reduzindo frames e qualidade.")
     } finally {
-      gif.dispose()
-      // Sem isto, cada tentativa deixa ate 30 bitmaps de 512x512 (1 MB cada em
-      // ARGB_8888) para o GC — suficiente para derrubar o app num GIF longo.
+      // Sem isto, cada tentativa deixa ate 60 bitmaps de 512x512 (1 MB cada em
+      // ARGB_8888) para o GC — suficiente para derrubar o app numa animacao longa.
       for (frame in candidate) frame.bitmap.recycle()
     }
   }
 
-  private fun result(destination: File, bytes: Long, frames: List<Frame>): WritableMap {
+  private fun result(destination: File, bytes: Long, frames: List<Frame>, side: Int): WritableMap {
     val map = Arguments.createMap()
     map.putString("uri", Uri.fromFile(destination).toString())
-    map.putInt("width", SIDE)
-    map.putInt("height", SIDE)
+    map.putInt("width", side)
+    map.putInt("height", side)
     map.putDouble("bytes", bytes.toDouble())
     map.putInt("durationMs", frames.sumOf { it.durationMs })
     map.putInt("frameCount", frames.size)
@@ -167,7 +244,7 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
    * anterior, e o que acontece com o anterior depende do disposal mode. Ignorar
    * isso nao da erro — da fantasma e rastro na animacao, que so aparece olhando.
    */
-  private fun composeFrames(gif: GifImage, stretch: Boolean): List<Frame> {
+  private fun composeFrames(gif: GifImage, stretch: Boolean, side: Int): List<Frame> {
     val canvasBitmap = Bitmap.createBitmap(gif.width, gif.height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(canvasBitmap)
     val out = mutableListOf<Frame>()
@@ -193,7 +270,7 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
             patch.recycle()
           }
 
-          out.add(Frame(toSquare(canvasBitmap, stretch), durationMs))
+          out.add(Frame(toSquare(canvasBitmap, stretch, side), durationMs))
           total += durationMs
 
           when (frame.disposalMode) {
@@ -247,23 +324,128 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     return QUALITY_STEPS.filter { it <= entry }.ifEmpty { listOf(QUALITY_STEPS.last()) }
   }
 
+  /**
+   * Extrai frames de um video.
+   *
+   * Corta nos primeiros MAX_DURATION_MS. Escolher outro trecho exigiria uma UI
+   * de recorte no tempo, e a propria especificacao do WhatsApp pede que "the
+   * first frame should say it all" — comecar do zero esta alinhado com isso.
+   */
+  private fun videoFrames(sourceUri: String, stretch: Boolean, side: Int): List<Frame> {
+    val retriever = MediaMetadataRetriever()
+    val out = mutableListOf<Frame>()
+    try {
+      openVideo(retriever, sourceUri)
+
+      val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+        ?: throw IllegalArgumentException("Nao foi possivel ler a duracao deste video.")
+      val sourceWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+      val sourceHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+      if (sourceWidth <= 0 || sourceHeight <= 0) {
+        throw IllegalArgumentException("Este arquivo nao tem imagem de video.")
+      }
+      val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+
+      val usableMs = minOf(durationMs, MAX_DURATION_MS.toLong()).coerceAtLeast(1L)
+      // O teto de frames manda sobre o fps desejado: pedir 12 fps em 10 s daria
+      // 120 frames, que nao cabem em 500 KB em qualidade nenhuma.
+      val fps = minOf(TARGET_FPS, maxOf(1, (MAX_FRAMES * 1000L / usableMs).toInt()))
+      val frameMs = maxOf(MIN_FRAME_MS, 1000 / fps)
+      val count = maxOf(1, (usableMs / frameMs).toInt()).coerceAtMost(MAX_FRAMES)
+
+      // Extrair JA REDUZIDO: um frame 4K em resolucao cheia e ~33 MB de bitmap,
+      // e sao dezenas deles. Preserva a proporcao; o toSquare faz o resto.
+      val (targetWidth, targetHeight) = scaledSize(sourceWidth, sourceHeight, side)
+
+      Log.d(TAG, "video ${sourceWidth}x$sourceHeight rot=$rotation ${durationMs}ms -> $count frames a $fps fps")
+
+      for (index in 0 until count) {
+        val raw = frameAt(retriever, index.toLong() * frameMs * 1000L, targetWidth, targetHeight) ?: continue
+        val upright = uprightFrame(raw, rotation, sourceWidth, sourceHeight)
+        try {
+          out.add(Frame(toSquare(upright, stretch, side), frameMs))
+        } finally {
+          if (upright !== raw) upright.recycle()
+          raw.recycle()
+        }
+      }
+
+      if (out.isEmpty()) throw IllegalArgumentException("Nao foi possivel extrair frames deste video.")
+      return out
+    } finally {
+      retriever.release()
+    }
+  }
+
+  private fun openVideo(retriever: MediaMetadataRetriever, sourceUri: String) {
+    val uri = Uri.parse(sourceUri)
+    if (uri.scheme == null || uri.scheme == "file") {
+      retriever.setDataSource(requireNotNull(uri.path) { "URI sem caminho: $sourceUri" })
+    } else {
+      retriever.setDataSource(reactApplicationContext, uri)
+    }
+  }
+
+  /** Dimensoes com o maior lado em 512, preservando a proporcao. */
+  private fun scaledSize(width: Int, height: Int, side: Int): Pair<Int, Int> {
+    val scale = side.toFloat() / maxOf(width, height)
+    return Pair(maxOf(1, (width * scale).toInt()), maxOf(1, (height * scale).toInt()))
+  }
+
+  private fun frameAt(retriever: MediaMetadataRetriever, timeUs: Long, width: Int, height: Int): Bitmap? =
+    // OPTION_CLOSEST e nao OPTION_CLOSEST_SYNC: SYNC salta para o keyframe mais
+    // proximo, e keyframes podem estar segundos distantes — amostrando a 12 fps
+    // isso devolveria o MESMO frame repetidas vezes e a animacao sairia travada.
+    // CLOSEST decodifica ate o frame real; mais lento, mas e o que anima.
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+      retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, width, height)
+    } else {
+      retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+    }
+
+  /**
+   * Endireita o frame — mas so quando da para TER CERTEZA de que e preciso.
+   *
+   * O MediaMetadataRetriever pode ou nao aplicar a rotacao do video por conta
+   * propria. Em vez de supor, compara as dimensoes: numa rotacao de 90/270, se
+   * o bitmap voltou com a mesma orientacao do metadata, a rotacao nao foi
+   * aplicada e nos aplicamos. Supor errado gira duas vezes.
+   *
+   * Limitacao conhecida: 180 graus nao troca as dimensoes, entao nao e
+   * detectavel assim e assumimos que o retriever cuidou. Um video gravado de
+   * cabeca para baixo pode sair invertido — caso raro, e "invertido" e melhor
+   * que "deitado em todo video retrato", que seria o custo de supor errado.
+   */
+  private fun uprightFrame(frame: Bitmap, rotation: Int, sourceWidth: Int, sourceHeight: Int): Bitmap {
+    val quarterTurn = rotation == 90 || rotation == 270
+    if (!quarterTurn) return frame
+
+    val sourceIsLandscape = sourceWidth >= sourceHeight
+    val frameIsLandscape = frame.width >= frame.height
+    // Orientacoes iguais = o retriever nao girou nada.
+    if (sourceIsLandscape != frameIsLandscape) return frame
+
+    val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
+    return Bitmap.createBitmap(frame, 0, 0, frame.width, frame.height, matrix, true)
+  }
+
   private fun normalizeDuration(raw: Int): Int =
     if (raw <= 0) UNSPECIFIED_FRAME_MS else raw.coerceAtLeast(MIN_FRAME_MS)
 
   /** Encaixa o frame no quadrado de 512x512, com ou sem distorcao. */
-  private fun toSquare(source: Bitmap, stretch: Boolean): Bitmap {
-    val square = Bitmap.createBitmap(SIDE, SIDE, Bitmap.Config.ARGB_8888)
+  private fun toSquare(source: Bitmap, stretch: Boolean, side: Int): Bitmap {
+    val square = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
     square.eraseColor(Color.TRANSPARENT)
     val canvas = Canvas(square)
 
     val destination = if (stretch) {
-      Rect(0, 0, SIDE, SIDE)
+      Rect(0, 0, side, side)
     } else {
-      val scale = minOf(SIDE.toFloat() / source.width, SIDE.toFloat() / source.height)
+      val scale = minOf(side.toFloat() / source.width, side.toFloat() / source.height)
       val width = (source.width * scale).toInt()
       val height = (source.height * scale).toInt()
-      val left = (SIDE - width) / 2
-      val top = (SIDE - height) / 2
+      val left = (side - width) / 2
+      val top = (side - height) / 2
       Rect(left, top, left + width, top + height)
     }
 
@@ -288,7 +470,7 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     return out
   }
 
-  private fun encode(frames: List<Frame>, quality: Float, destination: File): Long {
+  private fun encode(frames: List<Frame>, quality: Float, destination: File, side: Int): Long {
     // Apagar ANTES de cada tentativa, nao so uma vez antes do loop: a escada
     // reusa o mesmo caminho dezenas de vezes, e se o assemble nao truncar o
     // arquivo cada tentativa soma em cima da anterior. O tamanho medido so
@@ -296,8 +478,8 @@ class AnimatedStickerModule(context: ReactApplicationContext) : ReactContextBase
     if (destination.exists()) destination.delete()
     val encoder = WebPAnimEncoder(
       reactApplicationContext,
-      SIDE,
-      SIDE,
+      side,
+      side,
       WebPAnimEncoderOptions(
         minimizeSize = true,
         // 0 = repetir para sempre, que e o comportamento esperado de figurinha.

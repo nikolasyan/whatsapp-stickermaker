@@ -5,6 +5,8 @@ import { NativeModules } from 'react-native';
 import { MAX_STICKER_BYTES, type StickerMode } from '@/lib/packs';
 
 const STICKERS_DIRECTORY = 'stickers';
+/** Miniaturas de video no cache — a limpeza do boot conhece este nome. */
+const THUMBNAILS_DIRECTORY = 'thumbnails';
 const STICKER_SIDE = 512;
 const QUALITY_STEPS = [0.9, 0.75, 0.6, 0.45, 0.3, 0.15];
 
@@ -75,7 +77,7 @@ export function deleteStickerFile(uri: string) {
  */
 export function clearTransientCache() {
   try {
-    for (const name of ['ImagePicker', 'ImageManipulator', 'exports']) {
+    for (const name of ['ImagePicker', 'ImageManipulator', 'exports', THUMBNAILS_DIRECTORY]) {
       const directory = new Directory(Paths.cache, name);
       if (directory.exists) directory.delete();
     }
@@ -113,9 +115,25 @@ export type BuiltSticker = { uri: string; width: number; height: number; bytes: 
 
 export type BuiltAnimatedSticker = BuiltSticker & { durationMs: number; frameCount: number };
 
+/** De onde a animacao vem — define qual extrator nativo roda. */
+export type AnimatedSource = 'gif' | 'video';
+
+type AnimatedBuilder = (
+  sourceUri: string,
+  destinationPath: string,
+  stretch: boolean,
+) => Promise<BuiltAnimatedSticker>;
+
 const animatedModule = NativeModules.AnimatedStickerModule as
   | {
-      buildFromGif(sourceUri: string, destinationPath: string, stretch: boolean): Promise<BuiltAnimatedSticker>;
+      buildFromGif: AnimatedBuilder;
+      buildFromVideo: AnimatedBuilder;
+      animatedPreview(
+        sourceUri: string,
+        destinationPath: string,
+        stretch: boolean,
+        fromVideo: boolean,
+      ): Promise<BuiltAnimatedSticker>;
     }
   | undefined;
 
@@ -133,19 +151,49 @@ export const isAnimatedEncoderAvailable = Boolean(animatedModule?.buildFromGif);
  * `mode` aqui so distingue Preencher (distorce) de Original (centraliza): o
  * recorte do uCrop nao se aplica a animacao.
  */
+/**
+ * Previa ANIMADA do que a figurinha vai ser.
+ *
+ * Passa pelo mesmo pipeline da figurinha final — compor, encaixar, codificar
+ * WebP animado — so em 128px. Por isso mostra o enquadramento, a distorcao do
+ * modo Preencher, o movimento e o loop de verdade, em vez de aproximar.
+ *
+ * Vai para o cache: e descartavel, e a limpeza do boot leva embora.
+ */
+export async function animatedPreview(
+  sourceUri: string,
+  previewId: string,
+  mode: StickerMode,
+  source: AnimatedSource,
+): Promise<BuiltAnimatedSticker> {
+  if (!animatedModule?.animatedPreview) {
+    throw new Error('O módulo de figurinhas animadas não está nesta build.');
+  }
+  const directory = new Directory(Paths.cache, THUMBNAILS_DIRECTORY);
+  if (!directory.exists) directory.create({ intermediates: true });
+  return animatedModule.animatedPreview(
+    sourceUri,
+    new File(directory, `${previewId}.webp`).uri,
+    mode === 'stretch',
+    source === 'video',
+  );
+}
+
 export async function buildAnimatedSticker(
   sourceUri: string,
   stickerId: string,
   mode: StickerMode,
+  source: AnimatedSource,
 ): Promise<BuiltAnimatedSticker> {
-  if (!animatedModule?.buildFromGif) {
+  const build = source === 'video' ? animatedModule?.buildFromVideo : animatedModule?.buildFromGif;
+  if (!build) {
     throw new Error(
       'O módulo de figurinhas animadas não está nesta build. Rode "npx expo run:android" para recompilar — recarregar o JS não basta.',
     );
   }
   // Mesmo diretorio permanente das estaticas; o nativo grava neste caminho.
   const destination = stickerDestination(stickerId);
-  return animatedModule.buildFromGif(sourceUri, destination.uri, mode === 'stretch');
+  return build(sourceUri, destination.uri, mode === 'stretch');
 }
 
 /**

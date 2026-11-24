@@ -14,15 +14,42 @@ import { useJamboTheme } from '@/hooks/use-jambo-theme';
 import { MAX_STICKERS } from '@/lib/packs';
 import { setQueue, type QueuedImage } from '@/lib/sticker-queue';
 
+
 /**
  * Reconhece GIF por tipo MIME, com o nome do arquivo e a extensao do URI como
  * reserva: `mimeType` e opcional no retorno do picker e alguns fabricantes nao
  * o preenchem.
  */
-function isGif(asset: { mimeType?: string; fileName?: string | null; uri: string }): boolean {
+function isGif(asset: PickedAsset): boolean {
   if (asset.mimeType) return asset.mimeType === 'image/gif';
   const name = (asset.fileName ?? asset.uri).toLowerCase();
   return name.endsWith('.gif');
+}
+
+type PickedAsset = {
+  mimeType?: string;
+  fileName?: string | null;
+  uri: string;
+  type?: 'image' | 'video' | 'livePhoto' | 'pairedVideo' | null;
+};
+
+const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.3gp', '.mkv', '.webm', '.m4v'];
+
+/**
+ * Classifica o que pode virar animacao. Devolve `null` para o que nao pode.
+ *
+ * O `type` do picker e opcional e a propria documentacao avisa que vem `null`
+ * com alguns ContentProviders do Android, entao a extensao entra como reserva.
+ * Sem essa classificacao um JPEG cairia no caminho animado e o extrator
+ * falharia com erro obscuro.
+ */
+function animatedKindOf(asset: PickedAsset): 'gif' | 'video' | null {
+  if (asset.type === 'video') return 'video';
+  if (isGif(asset)) return 'gif';
+  if (asset.mimeType?.startsWith('video/')) return 'video';
+  const name = (asset.fileName ?? asset.uri).toLowerCase();
+  if (VIDEO_EXTENSIONS.some((extension) => name.endsWith(extension))) return 'video';
+  return null;
 }
 
 export default function CreateScreen() {
@@ -59,7 +86,8 @@ export default function CreateScreen() {
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
+      // No modo animado o seletor precisa oferecer video tambem.
+      mediaTypes: animated ? ['images', 'videos'] : ['images'],
       allowsEditing: false,
       allowsMultipleSelection: true,
       // Teto do pacote: escolher mais que isso nao teria onde caber.
@@ -73,38 +101,40 @@ export default function CreateScreen() {
     });
     if (result.canceled) return;
 
-    const images = result.assets.map((asset) => ({
-      sourceUri: asset.uri,
-      width: asset.width,
-      height: asset.height,
-    }));
-
     if (!animated) {
-      openEditor(images, false);
+      openEditor(
+        result.assets.map((asset) => ({
+          kind: 'image' as const,
+          sourceUri: asset.uri,
+          width: asset.width,
+          height: asset.height,
+        })),
+        false,
+      );
       return;
     }
 
-    // O seletor do sistema nao filtra por GIF de forma confiavel entre
-    // fabricantes, entao a checagem e nossa: sem ela um JPEG entraria no
-    // caminho animado e o decodificador de GIF falharia com erro obscuro.
-    const gifs = result.assets.filter((asset) => isGif(asset));
-    if (gifs.length === 0) {
+    const usable: QueuedImage[] = [];
+    for (const asset of result.assets) {
+      const kind = animatedKindOf(asset);
+      if (kind) usable.push({ kind, sourceUri: asset.uri, width: asset.width, height: asset.height });
+    }
+
+    if (usable.length === 0) {
       Alert.alert(
-        'Nenhum GIF selecionado',
-        'Figurinha animada precisa de um GIF. Para imagem comum, troque para "Imagem" acima.',
+        'Nada que anime foi selecionado',
+        'Figurinha animada precisa de um GIF ou um vídeo. Para imagem comum, troque para "Imagem" acima.',
       );
       return;
     }
-    if (gifs.length < result.assets.length) {
+    if (usable.length < result.assets.length) {
+      const fora = result.assets.length - usable.length;
       Alert.alert(
-        'Algumas não são GIF',
-        `${result.assets.length - gifs.length} das imagens escolhidas não são GIF e ficaram de fora.`,
+        'Alguns ficaram de fora',
+        `${fora} ${fora === 1 ? 'arquivo não é GIF nem vídeo' : 'arquivos não são GIF nem vídeo'}.`,
       );
     }
-    openEditor(
-      gifs.map((asset) => ({ sourceUri: asset.uri, width: asset.width, height: asset.height })),
-      true,
-    );
+    openEditor(usable, true);
   }
 
   async function takePhoto() {
@@ -116,7 +146,9 @@ export default function CreateScreen() {
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
     const asset = result.canceled ? null : result.assets[0];
     // A camera sempre produz imagem estatica, independente do modo escolhido.
-    if (asset?.uri) openEditor([{ sourceUri: asset.uri, width: asset.width, height: asset.height }], false);
+    if (asset?.uri) {
+      openEditor([{ kind: 'image', sourceUri: asset.uri, width: asset.width, height: asset.height }], false);
+    }
   }
 
   return (
@@ -146,7 +178,7 @@ export default function CreateScreen() {
         </Text>
         <Text style={[styles.subtitle, { color: palette.textSecondary }]}>
           {animated
-            ? 'Escolha um GIF da galeria. Ele vira uma animação de até 10 segundos.'
+            ? 'Escolha um GIF ou um vídeo. Vira uma animação dos primeiros 10 segundos.'
             : 'Escolha uma ou várias fotos, ou tire uma na hora. Recorte depois.'}
         </Text>
       </View>
@@ -178,7 +210,7 @@ export default function CreateScreen() {
           style={({ pressed }) => [styles.galleryButton, { backgroundColor: palette.accent }, pressed && styles.pressed]}>
           <JamboIcon name={animated ? 'frame' : 'camera'} size={19} color={palette.onAccent} />
           <Text style={[styles.galleryLabel, { color: palette.onAccent }]}>
-            {animated ? 'Escolher GIF' : 'Galeria'}
+            {animated ? 'Escolher GIF ou vídeo' : 'Galeria'}
           </Text>
         </Pressable>
         {/* Sem camera no modo animado: nao se tira um GIF. */}

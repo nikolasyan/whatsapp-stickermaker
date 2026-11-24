@@ -10,7 +10,15 @@
  * e o editor trata esse caso mostrando um aviso em vez de uma tela vazia.
  */
 
+/**
+ * O que foi escolhido. `image` segue o caminho estatico; `gif` e `video` sao
+ * ambos animados e podem conviver no mesmo pacote — o que o WhatsApp proibe e
+ * misturar estatico com animado, nao GIF com video.
+ */
+export type QueuedKind = 'image' | 'gif' | 'video';
+
 export type QueuedImage = {
+  kind: QueuedKind;
   /**
    * URI como veio da galeria ou da camera — pode ser `content://`.
    * Nao passa por stageSourceImage aqui: a conversao para PNG so e necessaria
